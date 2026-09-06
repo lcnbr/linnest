@@ -4,9 +4,6 @@
 #let g = build({
   node(<a>, label: [A])
   node(<c>, label: [C])
-  node(<d>, label: [$ integral dif x$])
-  node(<e>, label: [C])
-  node(<f>, label: [C])
   edge(
     source(<a>, name: <a-c-source>, id: 0, compass: "e"),
     <a-c>,
@@ -18,7 +15,6 @@
       sink-color: "1b7f4c",
     ),
   )
-  
 },
   name: "example",
 )

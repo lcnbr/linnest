@@ -1,1 +1,1 @@
-#import "@local/kurvst:0.2.0": *
+#import "@local/kurvst:0.1.0": *

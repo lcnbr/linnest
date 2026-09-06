@@ -3,12 +3,231 @@
 
 #let _plugin = plugin("../linnest.wasm")
 
+#let _option-rules = (
+  spring: (strength: "number", length: "number"),
+  repulsion: (
+    strength: "number",
+    centering: "number",
+    "edge-node": "number",
+    "edge-edge": "number",
+    dangling: "number",
+    "dangling-centroid": "number",
+    softening: "number",
+  ),
+  constraints: (
+    "side-strength": "number",
+    "node-movement": ("fixed", "layout"),
+    direction: ("down", "right", "left-to-right", "left-right", "lr"),
+    "rank-alignment": (
+      "center",
+      "start",
+      "end",
+      "top",
+      "north",
+      "left",
+      "west",
+      "bottom",
+      "south",
+      "right",
+      "east",
+    ),
+    roots: "indices",
+    "same-rank": "rank-groups",
+  ),
+  labels: (
+    distance: "number",
+    spring: "number",
+    repulsion: "number",
+    steps: "integer",
+    model: ("normal", "dangling-tangent", "fixed-length"),
+    step: "number",
+    tolerance: "number",
+    "max-movement": "number",
+  ),
+  solver: (
+    algorithm: ("force", "anneal", "tree", "dot", "stable-layered", "railroad"),
+    steps: "integer",
+    epochs: "integer",
+    seed: "integer",
+    step: "number",
+    "step-shrink": "number",
+    cooling: "number",
+    "acceptance-floor": "number",
+    tolerance: "number",
+    temperature: "number",
+    "max-movement": "number",
+    "incremental-energy": "boolean",
+    "crossing-penalty": "number",
+    "z-spring": "number",
+    "z-spring-growth": "number",
+  ),
+)
+
+#let _option-error(group, field, expected, value) = panic(
+  "layout "
+    + group
+    + "."
+    + field
+    + " must be "
+    + expected
+    + ", got "
+    + repr(value),
+)
+
+#let _check-option-value(group, field, value, rule) = {
+  if rule == "number" and type(value) not in (int, float) {
+    _option-error(group, field, "a number", value)
+  } else if rule == "integer" and (type(value) != int or value < 0) {
+    _option-error(group, field, "a non-negative integer", value)
+  } else if rule == "boolean" and type(value) != bool {
+    _option-error(group, field, "a boolean", value)
+  } else if (
+    rule == "indices"
+      and (
+        type(value) != array
+          or not value.all(index => type(index) == int and index >= 0)
+      )
+  ) {
+    _option-error(group, field, "an array of non-negative node indices", value)
+  } else if (
+    rule == "rank-groups"
+      and (
+        type(value) != array
+          or not value.all(group => (
+            type(group) in (bytes, function)
+              or (
+                type(group) == array
+                  and group.all(index => type(index) == int and index >= 0)
+              )
+          ))
+      )
+  ) {
+    _option-error(
+      group,
+      field,
+      "an array of subgraphs, node-index arrays, or module functions",
+      value,
+    )
+  } else if type(rule) == array and (type(value) != str or value not in rule) {
+    _option-error(group, field, "one of " + rule.map(repr).join(", "), value)
+  }
+}
+
+#let _checked-group(name, value) = {
+  if name not in _option-rules {
+    panic("layout options do not have a " + repr(name) + " group")
+  }
+  if value == none {
+    return (:)
+  }
+  if type(value) != dictionary {
+    panic("layout " + name + " options must be a dictionary")
+  }
+  let rules = _option-rules.at(name)
+  for key in value.keys() {
+    if key not in rules {
+      panic(
+        "layout "
+          + name
+          + " options do not have a "
+          + repr(key)
+          + " field; expected one of "
+          + rules.keys().map(repr).join(", "),
+      )
+    }
+    let _ = _check-option-value(name, key, value.at(key), rules.at(key))
+  }
+  value
+}
+
+#let _rank-subgraph(graph, value) = {
+  if type(value) == bytes {
+    return value
+  }
+  if type(value) == function {
+    return value(graph)
+  }
+  if type(value) != array or not value.all(item => type(item) == int) {
+    panic(
+      "layout rank-same entries must be subgraphs, node-index arrays, or module functions",
+    )
+  }
+  let nodes = graph-module.nodes(graph)
+  let count = 0
+  for edge in graph-module.edges(graph) {
+    for endpoint in (edge.source, edge.sink) {
+      if endpoint != none {
+        count = calc.max(count, endpoint.hedge + 1)
+      }
+    }
+  }
+  let bits = range(count).map(_ => false)
+  for index in value {
+    if index < 0 or index >= nodes.len() {
+      panic("layout rank-same node index is out of bounds")
+    }
+    for edge in graph-module.edges(graph) {
+      for endpoint in (edge.source, edge.sink) {
+        if endpoint != none and endpoint.node == index {
+          bits.at(endpoint.hedge) = true
+        }
+      }
+    }
+  }
+  subgraph-module.bits(graph, bits)
+}
+
+/// Construct reusable semantic layout options or sparsely update existing ones.
+///
+/// Each option group is a plain dictionary. Supplying `base` preserves every
+/// field not mentioned by a patch, including fields inside a patched group.
+/// Pass the result to @layout with argument spreading.
+///
+/// ```example
+/// #let common = options(
+///   spring: (strength: 8, length: 0.5),
+///   repulsion: (edge-node: 0.05, dangling: 2),
+///   solver: (algorithm: "force", steps: 50),
+/// )
+/// #let spacious = options(
+///   base: common,
+///   spring: (length: 0.7),
+///   repulsion: (dangling-centroid: 3),
+/// )
+/// #let g = layout(g, ..spacious)
+/// ```
+/// -> dictionary
+#let options(
+  /// Semantic option-group patches. -> arguments
+  ..patches,
+  /// Existing option dictionary to update. -> dictionary
+  base: (:),
+) = {
+  if type(base) != dictionary {
+    panic("layout options base must be a dictionary")
+  }
+  let result = base
+  if patches.pos().len() > 0 {
+    panic("layout options only accepts named group patches")
+  }
+  for (name, patch) in patches.named() {
+    let patch = _checked-group(name, patch)
+    let previous = result.at(name, default: (:))
+    if type(previous) != dictionary {
+      panic("layout options base " + name + " field must be a dictionary")
+    }
+    result.insert(name, previous + patch)
+  }
+  result
+}
+
 /// Apply the linnest layout pass to a graph object.
 ///
 /// This is intentionally a second step: construct or parse a graph first, then
 /// call `layout`. Set `layout-algo` to `"force"` for deterministic force
 /// integration, `"anneal"` for simulated annealing, `"tree"` for a traversal
-/// tree placement, or `"dot"` for a layered directed placement.
+/// tree placement, `"dot"` for a Graphviz-like layered placement, or
+/// `"stable-layered"` for a stable railroad-inspired layered placement.
 ///
 /// ```example
 /// #let g = graph.parse("digraph partial { a -> b;a -> b;a:s -> b:s; b:s -> c:s; c:s -> d:s; d:s -> a:s }").at(0)
@@ -31,8 +250,36 @@
   /// Graph object returned by `graph.build` or `graph.parse`.
   /// -> dictionary
   graph,
-  /// Optional subgraph object to lay out. With `"tree"` and `"dot"`, other
-  /// edges are drawn from the resulting node positions as straight lines. With
+  /// Semantic incidence-spring options. Supported fields are `strength` and
+  /// `length`. These override the corresponding flat parameters below.
+  /// -> none | dictionary
+  spring: none,
+  /// Semantic repulsion options. Supported fields are `strength`, `centering`,
+  /// `edge-node`, `edge-edge`, `dangling`, `dangling-centroid`, and
+  /// `softening`. These override the corresponding flat parameters below.
+  /// -> none | dictionary
+  repulsion: none,
+  /// Semantic constraint options. Supported fields are `side-strength`,
+  /// `node-movement`, `direction`, `rank-alignment`, `roots`, and `same-rank`.
+  /// These override the corresponding flat parameters below.
+  /// -> none | dictionary
+  constraints: none,
+  /// Semantic label-layout options. Supported fields are `distance`, `spring`,
+  /// `repulsion`, `steps`, `model`, `step`, `tolerance`, and `max-movement`.
+  /// These override the corresponding flat parameters below.
+  /// -> none | dictionary
+  labels: none,
+  /// Semantic solver options. Supported fields are `algorithm`, `steps`,
+  /// `epochs`, `seed`, `step`, `step-shrink`, `cooling`, `acceptance-floor`,
+  /// `tolerance`, `temperature`, `max-movement`, `incremental-energy`,
+  /// `crossing-penalty`, `z-spring`, and `z-spring-growth`. These override the
+  /// corresponding flat parameters below.
+  /// -> none | dictionary
+  solver: none,
+  /// Optional subgraph object to lay out. With `"tree"`, other edges are drawn
+  /// from the resulting node positions. With `"dot"` and `"stable-layered"`,
+  /// the subgraph determines rank constraints, while all paired edges between
+  /// included nodes get dummy routing vertices and edge positions. With
   /// `"force"` and `"anneal"`, nodes and edges outside the subgraph are fixed
   /// boundary points during optimization.
   /// -> none | bytes
@@ -43,21 +290,22 @@
   /// Height of the layout viewport used to derive the natural spring length.
   /// Applies to both `"force"` and `"anneal"`. -> float
   viewport-h: 10.0,
-  /// Horizontal spacing multiplier for the initial traversal-tree placement.
-  /// Applies before both `"force"` and `"anneal"`. -> float
+  /// Horizontal spacing multiplier for traversal-tree and layered placement.
+  /// For `"force"` and `"anneal"`, this scales the initial placement. -> float
   tree-dx: 0.9,
-  /// Vertical spacing multiplier for the initial traversal-tree placement.
-  /// Applies before both `"force"` and `"anneal"`. -> float
+  /// Vertical spacing multiplier for traversal-tree and layered placement.
+  /// For `"force"` and `"anneal"`, this scales the initial placement. -> float
   tree-dy: 1.2,
   /// Iterations per epoch. In `"force"` mode this is the number of force
   /// integration steps; in `"anneal"` mode this is the number of proposals per
   /// temperature epoch. -> int
-  steps: int(sys.inputs.at("steps", default: "30")),
+  steps: 30,
   /// Seed for deterministic initialization, force-mode jitter, and annealing
   /// proposals. Applies to both modes. -> int
-  seed: int(sys.inputs.at("seed", default: "2")),
+  seed: 2,
   /// Initial movement scale. `"force"` multiplies computed forces by this
-  /// value; `"anneal"` uses it as the proposal step size. -> float
+  /// value; `"anneal"` uses it as a proposal step size in natural spring-length
+  /// units. -> float
   step: 0.81,
   /// Anneal-only step shrink factor, applied when an epoch's acceptance ratio
   /// falls below `accept-floor`. -> float
@@ -68,18 +316,20 @@
   /// Anneal-only acceptance-ratio threshold below which `step` is shrunk by
   /// `step-shrink`. -> float
   accept-floor: 0.15,
-  /// Force-only early stop threshold for maximum movement in one step. The
-  /// annealing schedule stores this value but does not currently use it for
-  /// stopping. -> float
+  /// Force-only early stop threshold for maximum movement in one step, as a
+  /// multiple of the natural spring length. The annealing schedule stores this
+  /// value but does not currently use it for stopping. -> float
   early-tol: 1e-6,
-  /// Anneal-only initial temperature used in the Metropolis acceptance test.
-  /// -> float
+  /// Anneal-only initial temperature used in the Metropolis acceptance test,
+  /// scaled by natural spring length squared. -> float
   temp: 0.3,
-  /// Force-mode maximum movement clamp per point and per step. -> float
+  /// Force-mode maximum movement clamp per point and per step, as a multiple
+  /// of the natural spring length. -> float
   delta: 0.4,
   /// Base repulsion strength for vertex-vertex interactions. Also scales
-  /// `gamma-ev`, `gamma-ee`, `gamma-dangling`, and `g-center`. Applies to both
-  /// modes through the shared spring energy.
+  /// `gamma-ev`, `gamma-ee`, `gamma-dangling`,
+  /// `gamma-dangling-centroid`, and `g-center`. Applies to both modes through
+  /// the shared spring energy.
   /// -> float
   beta: 50.0,
   /// Spring stiffness for node-to-edge incidence lengths. Applies to both
@@ -97,17 +347,23 @@
   /// Repulsion for dangling half edges, relative to `beta`. Applies to
   /// both modes through the shared spring energy. -> float
   gamma-dangling: 5.0,
+  /// Repulsion of every dangling endpoint from the current node centroid,
+  /// relative to `beta`. The equal-and-opposite reaction is shared over the
+  /// nodes, avoiding translational drift. Applies to both modes. -> float
+  gamma-dangling-centroid: 0.0,
   /// Local edge-edge repulsion, relative to `beta`. Applies to both
   /// modes. -> float
   gamma-ee: 0.1,
   /// Bias that pushes points in directions implied by pin/port constraints.
+  /// Force mode treats this as a force and scales it by natural spring length;
+  /// anneal mode treats it as a dimensionless multiplier on proposal steps.
   /// Applies to both modes. -> float
   directional-force: 5.0,
   /// Edge-label target offset as a multiple of the graph spring length. Label
   /// layout runs after both graph layout modes. -> float
   label-length-scale: 0.6,
-  /// Spring strength pulling each label toward its target offset. Label layout
-  /// runs after both modes. -> float
+  /// Spring strength pulling each label toward its target offset in the
+  /// spring-based label layouts. -> float
   label-spring: 23.0,
   /// Repulsion strength between labels and graph points, scaled by spring
   /// length squared. Label layout runs after both modes. -> float
@@ -115,6 +371,12 @@
   /// Maximum number of post-layout label relaxation steps. Set to `0` to
   /// skip label placement. Applies after both modes. -> int
   label-steps: 20,
+  /// Edge-label relaxation model. `"normal"` uses a perpendicular offset,
+  /// `"dangling-tangent"` uses the edge direction for dangling half-edge labels
+  /// and a perpendicular offset for paired edges, and `"fixed-length"` keeps
+  /// each label at a fixed distance from its edge point and only lets that
+  /// segment rotate. -> string
+  label-layout: "normal",
   /// Label relaxation step size. Applies after both modes. -> float
   label-step: 0.15,
   /// Label relaxation early stop threshold. Applies after both modes. -> float
@@ -134,7 +396,8 @@
   incremental-energy: true,
   /// Layout algorithm. Use `"force"` for direct force integration, `"anneal"`
   /// for simulated annealing against the spring energy, `"tree"` for a
-  /// traversal-tree placement, or `"dot"` for a layered directed placement.
+  /// traversal-tree placement, `"dot"` for a Graphviz-like layered placement,
+  /// or `"stable-layered"` for a stable railroad-inspired layered placement.
   /// -> string
   layout-algo: "force",
   /// Node movement policy. `"layout"` lets the layout algorithm move nodes.
@@ -143,63 +406,152 @@
   /// subgraph are moved; other edge control points stay at their current
   /// positions. -> string
   layout-nodes: "layout",
-  /// Ordered node indices used as preferred roots for `"tree"` and `"dot"`.
-  /// Roots outside the selected node set are ignored. Remaining components are
-  /// laid out afterward in graph order. -> array
+  /// Direction for traversal-tree and layered rank placement. `"down"` places
+  /// increasing ranks downward; `"right"` swaps the layout axes so increasing
+  /// ranks go left-to-right and measured node/label widths reserve rank-axis
+  /// space. -> string
+  layout-direction: "down",
+  /// Alignment of real nodes inside a rank along the rank axis. `"center"` keeps
+  /// node centers aligned, while `"start"` / `"left"` and `"end"` / `"right"`
+  /// align the corresponding measured node-box side. -> string
+  rank-align: "center",
+  /// Ordered node indices used as preferred roots for `"tree"`, `"dot"`, and
+  /// `"stable-layered"`. Roots outside the selected node set are ignored.
+  /// Remaining components are laid out afterward in graph order. -> array
   layout-roots: (),
+  /// Subgraphs whose incident nodes should share a dot/stable-layered rank.
+  /// These are layout hints supplied by Typst rather than parsed graph
+  /// structure. -> array
+  rank-same: (),
+  /// Dot/stable-layered also honors a node statement `layout-rank` as an exact
+  /// non-negative integer rank. Nodes with the same `layout-rank` are placed on
+  /// the same horizontal layer, and larger ranks are placed lower.
+  /// Relative layout weight for paired edges outside the dot/stable-layered
+  /// rank subgraph. Lower values make these edges guide routing without
+  /// dominating the rank tree. -> float
+  route-edge-weight: 0.15,
+  /// Extra horizontal straightening weight for the first or last segment of an
+  /// edge with `source-route-exit` or `sink-route-exit` set to a vertical side.
+  /// -> float
+  route-exit-weight: 4.0,
+  /// Multiplier for measured edge-label width when sizing non-rank dummy
+  /// routing vertices in dot/stable-layered layout. -> float
+  route-label-width-scale: 1.0,
+  /// Maximum non-rank dummy label width as a multiple of `tree-dx`. Set to
+  /// `0` or a negative value to disable the cap. -> float
+  route-label-width-cap: 2.0,
   /// Force-only spring pulling temporary z coordinates back toward the layout
-  /// plane. Use with `z-spring-growth` to help separate overlapping
-  /// points during integration. -> float
-  z-spring: 0.05,
+  /// plane. Higher values keep the visible 2D forces from being hidden by the
+  /// temporary 3D symmetry-breaking offsets. -> float
+  z-spring: 2.0,
   /// Force-only per-epoch multiplier for `z-spring`. -> float
-  z-spring-growth: 1.3,
+  z-spring-growth: 1.0,
   /// Natural spring-length multiplier. This scales the graph's preferred edge
-  /// length and the repulsive coefficients derived from it. Applies to both
-  /// modes. -> float
+  /// length and dimensional force/energy terms so changing only this value
+  /// mostly zooms the result instead of retuning the force ratios. Applies to
+  /// both modes. -> float
   length-scale: 0.35,
 ) = {
+  spring = _checked-group("spring", spring)
+  repulsion = _checked-group("repulsion", repulsion)
+  constraints = _checked-group("constraints", constraints)
+  labels = _checked-group("labels", labels)
+  solver = _checked-group("solver", solver)
+  let rank-groups = constraints.at("same-rank", default: rank-same)
+  if type(rank-groups) != array {
+    panic("layout rank-same/constraints.same-rank must be an array")
+  }
   let settings = (
     viewport-w: str(viewport-w),
     viewport-h: str(viewport-h),
     tree-dx: str(tree-dx),
     tree-dy: str(tree-dy),
-    steps: str(steps),
-    seed: str(seed),
-    step: str(step),
-    step-shrink: str(step-shrink),
-    cool: str(cool),
-    accept-floor: str(accept-floor),
-    early-tol: str(early-tol),
-    temp: str(temp),
-    delta: str(delta),
-    beta: str(beta),
-    k-spring: str(k-spring),
-    g-center: str(g-center),
-    epochs: str(epochs),
-    crossing-penalty: str(crossing-penalty),
-    gamma-dangling: str(gamma-dangling),
-    gamma-ee: str(gamma-ee),
-    directional-force: str(directional-force),
-    label-length-scale: str(label-length-scale),
-    label-spring: str(label-spring),
-    label-charge: str(label-charge),
-    label-steps: str(label-steps),
-    label-step: str(label-step),
-    label-early-tol: str(label-early-tol),
-    label-max-delta-scale: str(label-max-delta-scale),
-    gamma-ev: str(gamma-ev),
-    eps: str(eps),
-    incremental-energy: incremental-energy,
-    layout-algo: layout-algo,
-    layout-nodes: layout-nodes,
-    layout-roots: layout-roots,
-    z-spring: str(z-spring),
-    z-spring-growth: str(z-spring-growth),
-    length-scale: str(length-scale),
+    steps: str(solver.at("steps", default: steps)),
+    seed: str(solver.at("seed", default: seed)),
+    step: str(solver.at("step", default: step)),
+    step-shrink: str(solver.at("step-shrink", default: step-shrink)),
+    cool: str(solver.at("cooling", default: cool)),
+    accept-floor: str(solver.at("acceptance-floor", default: accept-floor)),
+    early-tol: str(solver.at("tolerance", default: early-tol)),
+    temp: str(solver.at("temperature", default: temp)),
+    delta: str(solver.at("max-movement", default: delta)),
+    beta: str(repulsion.at("strength", default: beta)),
+    k-spring: str(spring.at("strength", default: k-spring)),
+    g-center: str(repulsion.at("centering", default: g-center)),
+    epochs: str(solver.at("epochs", default: epochs)),
+    crossing-penalty: str(solver.at(
+      "crossing-penalty",
+      default: crossing-penalty,
+    )),
+    gamma-dangling: str(repulsion.at("dangling", default: gamma-dangling)),
+    gamma-dangling-centroid: str(
+      repulsion.at("dangling-centroid", default: gamma-dangling-centroid),
+    ),
+    gamma-ee: str(repulsion.at("edge-edge", default: gamma-ee)),
+    directional-force: str(constraints.at(
+      "side-strength",
+      default: directional-force,
+    )),
+    label-length-scale: str(labels.at("distance", default: label-length-scale)),
+    label-spring: str(labels.at("spring", default: label-spring)),
+    label-charge: str(labels.at("repulsion", default: label-charge)),
+    label-steps: str(labels.at("steps", default: label-steps)),
+    label-layout: labels.at("model", default: label-layout),
+    label-step: str(labels.at("step", default: label-step)),
+    label-early-tol: str(labels.at("tolerance", default: label-early-tol)),
+    label-max-delta-scale: str(
+      labels.at("max-movement", default: label-max-delta-scale),
+    ),
+    gamma-ev: str(repulsion.at("edge-node", default: gamma-ev)),
+    eps: str(repulsion.at("softening", default: eps)),
+    incremental-energy: solver.at(
+      "incremental-energy",
+      default: incremental-energy,
+    ),
+    layout-algo: solver.at("algorithm", default: layout-algo),
+    layout-nodes: constraints.at("node-movement", default: layout-nodes),
+    layout-direction: constraints.at("direction", default: layout-direction),
+    rank-align: constraints.at("rank-alignment", default: rank-align),
+    layout-roots: constraints.at("roots", default: layout-roots),
+    rank-same: rank-groups.map(group => subgraph-module.to-label(_rank-subgraph(
+      graph,
+      group,
+    ))),
+    route-edge-weight: str(route-edge-weight),
+    route-exit-weight: str(route-exit-weight),
+    route-label-width-scale: str(route-label-width-scale),
+    route-label-width-cap: str(route-label-width-cap),
+    z-spring: str(solver.at("z-spring", default: z-spring)),
+    z-spring-growth: str(solver.at(
+      "z-spring-growth",
+      default: z-spring-growth,
+    )),
+    length-scale: str(spring.at("length", default: length-scale)),
   )
   if subgraph != none {
     settings.insert("subgraph", subgraph-module.to-label(subgraph))
   }
-  let graph-bytes = _plugin.layout_parsed_graph(graph-module.graph-bytes(graph), cbor.encode(settings))
+  let graph-bytes = _plugin.layout_parsed_graph(
+    graph-module.graph-bytes(graph),
+    cbor.encode(settings),
+  )
   graph-module.with-bytes(graph, graph-bytes)
+}
+
+/// Apply multiple layout passes in order.
+///
+/// Each pass is a dictionary of named arguments accepted by `layout`, excluding
+/// the graph itself.
+/// -> dictionary
+#let sequence(
+  /// Graph object returned by `graph.build` or `graph.parse`. -> dictionary
+  graph,
+  /// Array of layout option dictionaries. -> array
+  passes,
+) = {
+  let result = graph
+  for pass in passes {
+    result = layout(result, ..pass)
+  }
+  result
 }
