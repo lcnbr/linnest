@@ -1,12 +1,18 @@
 // Public graph API.
 //
 // Keep user-facing constructors, queries, and modifiers here. The
-// serialization-heavy implementation lives in `graph-impl.typ`.
+// serialization-heavy implementation lives in `impl/graph.typ`.
 
-#import "graph-impl.typ" as _impl
+#import "impl/graph.typ" as _impl
 
 #let graph-bytes(graph) = _impl.graph-bytes(graph)
 #let with-bytes(graph, graph-bytes) = _impl.with-bytes(graph, graph-bytes)
+
+/// Construct a graph from a versioned Linnest graph-spec CBOR document.
+///
+/// This is the native renderer boundary. Unlike @parse, it does not parse DOT.
+/// -> dictionary
+#let from-spec(input) = _impl.from-spec(input)
 
 /// Build one graph object from a stream of node and edge items.
 ///
@@ -115,18 +121,20 @@
   /// -> any
   default-sink-data: none,
 ) = _impl.build(
+  (
+    name: name,
+    data: data,
+    statements: statements,
+    default-edge-statements: default-edge-statements,
+    default-node-data: default-node-data,
+    default-edge-data: default-edge-data,
+    default-source-data: default-source-data,
+    default-sink-data: default-sink-data,
+    default-node-statements: default-node-statements,
+    nodes: (),
+    edges: (),
+  ),
   ..items,
-  name: name,
-  data: data,
-  statements: statements,
-  default-edge-statements: default-edge-statements,
-  default-node-data: default-node-data,
-  default-edge-data: default-edge-data,
-  default-source-data: default-source-data,
-  default-sink-data: default-sink-data,
-  default-node-statements: default-node-statements,
-  nodes: (),
-  edges: (),
 )
 
 /// Parse one or more DOT graphs into graph objects.
@@ -244,7 +252,10 @@
 /// - `pos` is parsed as node placement. Simple numeric values are exposed as
 ///   `node.pos`; extended placement values are used by
 ///   #api-link("layout-", "layout"). `pin` is an explicit layout constraint and
-///   is not exposed as a public statement.
+///   is not exposed as a public statement. The `pos-x-set` and `pos-y-set`
+///   record fields say which axes were explicitly supplied, including for
+///   partial placements whose resolved `pos` contains both coordinates. @dot
+///   preserves them as canonical Linnest DOT extension attributes.
 ///
 /// ````example
 /// #let src = ```dot
@@ -315,8 +326,10 @@
 /// - `pos` is parsed as the edge control-point placement. `pin` is an explicit
 ///   edge layout constraint. `shift`, `label-pos`, `label-angle`, and `bend`
 ///   are parsed into edge geometry fields; except for `pin`, they also remain
-///   available as statements. Other edge attributes are preserved as edge
-///   statements.
+///   available as statements. The `pos-x-set` and `pos-y-set` record fields
+///   identify explicitly supplied axes, including partial placements; @dot
+///   preserves them as canonical Linnest DOT extension attributes. Other edge
+///   attributes are preserved as edge statements.
 ///
 /// ````example
 /// #let src = ```dot
@@ -388,11 +401,11 @@
 ///
 /// ````example
 /// #let src = ```dot
-/// digraph { a [id=0, pos="0,0"]; b [id=1, pos="2,0!"]; }
+/// digraph { a [id=0, pos="0,0"]; b [id=1, pos="2,0!"]; a -> b; }
 /// ```
-/// #let parsed-nodes = nodes(parse(src.text).first())
-/// #parsed-nodes.map(n => n.pos)
-/// #parsed-nodes.map(n => n.statements.at("pos-mode", default: none))
+/// #let parsed = parse(src.text).first()
+/// #nodes(parsed).map(n => n.pos)
+/// #nodes(layout(parsed, steps: 10, seed: 1)).map(n => n.pos)
 /// ````
 ///
 /// - `pos="ref(node:<id>)+dx,dy!"` and `pos="ref(edge:<id>)+dx,dy!"` reference
@@ -468,7 +481,7 @@
   /// -> string | array
   eval-node-fields: (),
   /// Default data merged into every edge data. Captured edge data fields override it, but bare dot statements don't set data fields. To turn statements into data fields, use `eval-edge-fields`.
-  /// 
+  ///
   /// -> any
   default-edge-data: none,
   /// Edge statement fields to evaluate into `graph.edges(g).at(i).data`. The eval
@@ -529,8 +542,7 @@
   eval-mode: "markup",
   /// Additional Typst names available while evaluating field values. -> dictionary
   scope: (:),
-) = _impl.parse(
-  input,
+) = _impl.parse(input, (
   default-node-data: default-node-data,
   default-edge-data: default-edge-data,
   default-source-data: default-source-data,
@@ -542,7 +554,7 @@
   eval-sink-fields: eval-sink-fields,
   eval-mode: eval-mode,
   scope: scope,
-)
+))
 
 /// Create a graph node item for @build.
 ///
@@ -567,12 +579,14 @@
   /// Additional flat node statements. Used by DOT; values cannot nest. -> dictionary
   statements: (:),
 ) = _impl.node(
+  (
+    name: name,
+    id: id,
+    pos: pos,
+    shift: shift,
+    statements: statements,
+  ),
   ..args,
-  name: name,
-  id: id,
-  pos: pos,
-  shift: shift,
-  statements: statements,
 )
 
 /// Create a source half-edge endpoint.
@@ -595,7 +609,11 @@
   /// DOT compass point such as `"n"`, `"s"`, `"e"`, or `"w"`. -> none | string
   compass: none,
 ) = {
-  _impl.source(node, ..args, name: name, id: id, statement: statement, compass: compass)
+  _impl.source(
+    node,
+    (name: name, id: id, statement: statement, compass: compass),
+    ..args,
+  )
 }
 
 /// Create a sink half-edge endpoint.
@@ -618,7 +636,11 @@
   /// DOT compass point such as `"n"`, `"s"`, `"e"`, or `"w"`. -> none | string
   compass: none,
 ) = {
-  _impl.sink(node, ..args, name: name, id: id, statement: statement, compass: compass)
+  _impl.sink(
+    node,
+    (name: name, id: id, statement: statement, compass: compass),
+    ..args,
+  )
 }
 
 /// Create a graph edge item for @build.
@@ -626,9 +648,11 @@
 /// Positional arguments may contain one @source, one @sink, and optionally one
 /// Typst label used as the edge name. The numeric `id` chooses the edge order.
 /// Extra named arguments are captured as edge data fields, so
-/// `edge(source(<a>), sink(<b>), particle: "g")` stores
-/// `(particle: "g")`. The default draw style uses `data.label` as the
-/// visible edge label when present.
+/// `edge(source(<a>), sink(<b>), weight: 3)` stores `(weight: 3)`. `style` is
+/// first-class drawing metadata: `auto` asks `draw` for its configured/default
+/// style, a dictionary or callback patches that style, and `none` hides the
+/// painted edge. The default draw style uses
+/// `data.label` as the visible edge label when present.
 /// -> array
 #let edge(
   /// Source/sink half-edges and optional edge name; extra named arguments become data fields. -> any
@@ -649,31 +673,74 @@
   label-angle: none,
   /// Edge bend stored as a statement. -> none | int | float | string
   bend: none,
+  /// Static logical-edge style, callback, `auto` fallback, or `none` to hide. -> auto | dictionary | array | function | none
+  style: auto,
   /// Additional flat edge statements. Used by DOT; values cannot nest. -> dictionary
   statements: (:),
 ) = _impl.edge(
+  (
+    name: name,
+    id: id,
+    orientation: orientation,
+    pos: pos,
+    shift: shift,
+    label-pos: label-pos,
+    label-angle: label-angle,
+    bend: bend,
+    style: style,
+    statements: statements,
+  ),
   ..args,
-  name: name,
-  id: id,
-  orientation: orientation,
-  pos: pos,
-  shift: shift,
-  label-pos: label-pos,
-  label-angle: label-angle,
-  bend: bend,
-  statements: statements,
 )
 
 /// Create a grouped placement coordinate.
+///
+/// `side: "+"` keeps the solved coordinate non-negative and `side: "-"`
+/// keeps it non-positive. `start` supplies an initial value without fixing the
+/// coordinate; multiple starts for one group are averaged. Groups are layout
+/// constraints and therefore require pin placement, which is the @pos default.
+/// Node and edge coordinates with the same group name and side share one axis
+/// coordinate throughout layout.
+///
+/// ```example
+/// #group("right", side: "+", start: 4)
+/// ```
 /// -> dictionary
 #let group(
   /// Group identifier shared by positions constrained to the same coordinate. -> string | int | bool
   name,
   /// Optional sign constraint: `"+"`, `"-"`, `"positive"`, or `"negative"`. -> none | string
   side: none,
-) = _impl.group(name, side: side)
+  /// Optional initial coordinate; unlike @pin, this remains movable. -> none | int | float
+  start: none,
+) = _impl.group(name, side, start)
+
+/// Mark one coordinate as a layout constraint.
+/// -> dictionary
+#let pin(
+  /// Coordinate value to constrain. -> int | float | dictionary
+  value,
+) = _impl.pin(value)
+
+/// Mark one coordinate as an initial layout value only.
+/// -> dictionary
+#let start(
+  /// Coordinate value to use as the layout seed. -> int | float
+  value,
+) = _impl.start(value)
 
 /// Create a first-class graph placement.
+///
+/// The default `mode: "pin"` turns numeric coordinates into layout constraints
+/// and also makes the coordinates immediately drawable without a layout pass.
+/// Use `start(value)` for an individual coordinate that should only seed the
+/// layout, or `pin(value)` to pin an individual numeric coordinate when
+/// `mode: "start"` is used. Grouped coordinates are always layout constraints
+/// for their axis.
+///
+/// ```example
+/// #pos(x: group("right", side: "+"), y: start(10))
+/// ```
 /// -> dictionary
 #let pos(
   /// Absolute or grouped x coordinate. -> none | int | float | dictionary
@@ -689,10 +756,24 @@
   /// Placement mode: `"pin"` constrains layout, `"start"` only seeds it. -> string
   mode: "pin",
 ) = {
-  _impl.pos(x: x, y: y, ref: ref, dx: dx, dy: dy, mode: mode)
+  _impl.pos((x: x, y: y, ref: ref, dx: dx, dy: dy, mode: mode))
 }
 
 /// Map graph metadata to new native data.
+///
+/// The callbacks receive decoded records plus a `fields` dictionary containing
+/// merged statements and direct record fields. A callback returns `none` to
+/// leave the record unchanged, `(data: value)` to set new native data, or
+/// structural fields such as `pos`, `shift`, and `statements` to patch data
+/// seen by later layout calls.
+/// Source and sink callbacks may likewise patch `statement`, `port-label`, and
+/// `compass` before subgraph and layout operations run.
+///
+/// ```example
+/// #let g = build({ node(<a>) })
+/// #let g = map(g, node: node => (data: (label: [A])))
+/// #nodes(g).first().data.label
+/// ```
 /// -> dictionary
 #let map(
   /// Graph object to transform. -> dictionary
@@ -708,10 +789,71 @@
   /// Callback for sink half-edge records. -> none | function
   sink: none,
 ) = {
-  _impl.map(graph_, graph: graph, node: node, edge: edge, source: source, sink: sink)
+  _impl.map(graph_, (
+    graph: graph,
+    node: node,
+    edge: edge,
+    source: source,
+    sink: sink,
+  ))
+}
+
+/// Attach layout-relevant drawing style to a graph.
+///
+/// Node style is measured immediately and stored as `layout-width` /
+/// `layout-height` statements for later layout calls. Edge labels are measured
+/// as `label-width` / `label-height` statements for label placement. `draw`
+/// uses the stored node and edge-label style by default.
+/// -> dictionary
+#let style(
+  /// Graph object to style. -> dictionary
+  graph_,
+  /// Extra scope visible to label/style callbacks. -> dictionary
+  scope: (:),
+  /// Coordinate length for one graph-layout unit. Numbers are interpreted as em.
+  /// -> int | float | length | ratio
+  unit: 1,
+  /// Node label content or callback. `auto` uses node data/statement label or
+  /// node name. -> auto | content | string | function | none
+  node-label: auto,
+  /// CeTZ content style for node labels. Its padding contributes to measured
+  /// node size. -> dictionary | function
+  node-label-style: (:),
+  /// CeTZ node shape style or callback. Explicit numeric radii contribute to
+  /// measured node size. -> dictionary | function | none
+  node-style: (:),
+  /// Edge label content or callback. `none` leaves edge labels unstyled and
+  /// unmeasured. -> content | string | function | none
+  edge-label: none,
+  /// CeTZ content style for edge labels. Its padding contributes to measured
+  /// edge-label size. -> dictionary | function
+  edge-label-style: (:),
+) = {
+  _impl.style(graph_, (
+    scope: scope,
+    unit: unit,
+    node-label: node-label,
+    node-label-style: node-label-style,
+    node-style: node-style,
+    edge-label: edge-label,
+    edge-label-style: edge-label-style,
+  ))
 }
 
 /// Evaluate selected fields into native data entries.
+///
+/// Each selected field is read from the record's merged `fields` dictionary,
+/// evaluated in a scope containing those fields, and written to `data.<field>`.
+///
+/// ```example
+/// #let g = build({
+///   node(<a>)
+///   node(<b>)
+///   edge(source(<a>), sink(<b>), statements: (mom: "p"))
+/// }, default-edge-statements: (display-label: "$#mom$"))
+/// #let g = eval-fields(g, eval-edge-fields: ("display-label",))
+/// #edges(g).first().data.at("display-label")
+/// ```
 /// -> dictionary
 #let eval-fields(
   /// Graph object whose selected statement fields should be evaluated. -> dictionary
@@ -730,8 +872,7 @@
   eval-mode: "markup",
   /// Additional Typst names available while evaluating field values. -> dictionary
   scope: (:),
-) = _impl.eval-fields(
-  graph_,
+) = _impl.eval-fields(graph_, (
   eval-graph-fields: eval-graph-fields,
   eval-node-fields: eval-node-fields,
   eval-edge-fields: eval-edge-fields,
@@ -739,9 +880,17 @@
   eval-sink-fields: eval-sink-fields,
   eval-mode: eval-mode,
   scope: scope,
-)
+))
 
 /// Return graph metadata.
+///
+/// The result has `name`, `global-statements`, `default-edge-statements`, and
+/// `default-node-statements`.
+///
+/// ```example
+/// #let g = build({ node(<a>) }, name: "demo")
+/// #info(g).name
+/// ```
 /// -> dictionary
 #let info(
   /// Graph object returned by @build, @parse, #api-link("layout-", "layout"), or another graph API. -> dictionary
@@ -749,6 +898,15 @@
 ) = _impl.info(graph)
 
 /// Serialize a graph object to DOT.
+///
+/// ```example
+/// #let g = build({
+///   node(<a>)
+///   node(<b>)
+///   edge(source(<a>), sink(<b>))
+/// }, name: "demo")
+/// #dot(g).contains("digraph demo")
+/// ```
 /// -> string
 #let dot(
   /// Graph object to serialize. -> dictionary
@@ -758,26 +916,50 @@
 /// Return node records, optionally filtered by a subgraph object.
 ///
 /// Node `name` values are Typst labels when present.
+///
+/// ```example
+/// #let g = build({
+///   node(<a>)
+///   node(<b>)
+/// })
+/// #nodes(g).map(node => str(node.name)).join(", ")
+/// ```
 /// -> array
 #let nodes(
   /// Graph object to inspect. -> dictionary
   graph,
   /// Optional subgraph filter; only nodes incident to selected half edges are returned. -> none | bytes
   subgraph: none,
-) = _impl.nodes(graph, subgraph: subgraph)
+) = _impl.nodes(graph, subgraph)
 
 /// Return edge records, optionally filtered by a subgraph object.
 ///
 /// Edge `name` values are Typst labels when present.
+///
+/// ```example
+/// #let g = build({
+///   node(<a>)
+///   node(<b>)
+///   edge(source(<a>, compass: "e"), sink(<b>))
+/// })
+/// #edges(g).len()
+/// ```
 /// -> array
 #let edges(
   /// Graph object to inspect. -> dictionary
   graph,
   /// Optional subgraph filter; only selected edges/half-edges are returned. -> none | bytes
   subgraph: none,
-) = _impl.edges(graph, subgraph: subgraph)
+) = _impl.edges(graph, subgraph)
 
 /// Return one named node's native data.
+///
+/// `name` is a Typst label such as `<a>` or the corresponding string name.
+///
+/// ```example
+/// #let g = build({ node(<a>, label: [A]) })
+/// #node-data(g, <a>).label
+/// ```
 /// -> any
 #let node-data(
   /// Graph object to inspect. -> dictionary
@@ -787,6 +969,17 @@
 ) = _impl.node-data(graph_, name)
 
 /// Return one named edge's native data.
+///
+/// `name` is a Typst label such as `<e>` or the corresponding string name.
+///
+/// ```example
+/// #let g = build({
+///   node(<a>)
+///   node(<b>)
+///   edge(source(<a>), <e>, sink(<b>), label: [$p$])
+/// })
+/// #edge-data(g, <e>).label
+/// ```
 /// -> any
 #let edge-data(
   /// Graph object to inspect. -> dictionary
@@ -796,6 +989,15 @@
 ) = _impl.edge-data(graph_, name)
 
 /// Update one named node's native data.
+///
+/// `update` may be a replacement data value or a function
+/// `(data, node) => new-data`.
+///
+/// ```example
+/// #let g = build({ node(<a>) })
+/// #let g = update-node-data(g, <a>, (label: [A]))
+/// #nodes(g).first().data.label
+/// ```
 /// -> dictionary
 #let update-node-data(
   /// Graph object to update. -> dictionary
@@ -807,6 +1009,19 @@
 ) = _impl.update-node-data(graph_, name, update)
 
 /// Update one named edge's native data.
+///
+/// `update` may be a replacement data value or a function
+/// `(data, edge) => new-data`.
+///
+/// ```example
+/// #let g = build({
+///   node(<a>)
+///   node(<b>)
+///   edge(source(<a>), <e>, sink(<b>))
+/// })
+/// #let g = update-edge-data(g, <e>, (label: [$p$]))
+/// #edges(g).first().data.label
+/// ```
 /// -> dictionary
 #let update-edge-data(
   /// Graph object to update. -> dictionary
@@ -818,6 +1033,20 @@
 ) = _impl.update-edge-data(graph_, name, update)
 
 /// Join two graphs by matching dangling half-edge statements or ids on `key`.
+///
+/// Supported key values are `"statement"`, `"compass"`, and `"id"`.
+///
+/// ```example
+/// #let left = build({
+///   node(<a>)
+///   edge(sink(<a>, statement: "j"))
+/// })
+/// #let right = build({
+///   node(<b>)
+///   edge(source(<b>, statement: "j"))
+/// })
+/// #edges(join(left, right, key: "statement")).len()
+/// ```
 /// -> dictionary
 #let join(
   /// Left graph object. -> dictionary
@@ -826,9 +1055,18 @@
   right,
   /// Dangling half-edge match key: `"statement"`, `"compass"`, or `"id"`. -> string
   key: "statement",
-) = _impl.join(left, right, key: key)
+) = _impl.join(left, right, key)
 
 /// Return subgraph objects for the graph's cycle basis.
+///
+/// ```example
+/// #let g = build({
+///   node(<a>)
+///   node(<b>)
+///   edge(source(<a>), sink(<b>))
+/// })
+/// #cycles(g).len()
+/// ```
 /// -> array
 #let cycles(
   /// Graph object to analyze. -> dictionary
@@ -836,6 +1074,15 @@
 ) = _impl.cycles(graph)
 
 /// Return subgraph objects for the graph's spanning forests.
+///
+/// ```example
+/// #let g = build({
+///   node(<a>)
+///   node(<b>)
+///   edge(source(<a>), sink(<b>))
+/// })
+/// #forests(g).len()
+/// ```
 /// -> array
 #let forests(
   /// Graph object to analyze. -> dictionary
