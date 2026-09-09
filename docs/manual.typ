@@ -88,8 +88,9 @@
 
 
 
-  - `graph` for construction, parsing, inspection, joins, and graph algorithms.
-  - `subgraph` for subgraph object construction and inspection.
+  - `graph` for construction, parsing, inspection, directed cuts, joins, and graph
+    algorithms.
+  - `subgraph` for half-edge selection, annotations, and inspection.
   - `layout` for the separate layout pass.
   - `draw` for rendering a laid-out graph object with CeTZ.
 
@@ -210,8 +211,9 @@
   graph may also carry an internal opaque payload, but that payload is used only
   by the Typst wrapper and is not exposed in public records. Build or parse graph
   objects with `graph`, transform graph objects with `layout`, and pass objects
-  back to `graph` or `subgraph` for inspection. Subgraph objects are still opaque
-  zero-copy values.
+  back to `graph` or `subgraph` for inspection. Subgraphs are also dictionaries:
+  they combine an archived half-edge selection with a topology signature and
+  Typst-only annotations, rather than exposing raw bytes as public inputs.
 
   - `graph.parse(input)` parses one or more DOT digraphs and returns an array of
     graph objects. Its `eval-graph-fields`, `eval-node-fields`,
@@ -220,7 +222,13 @@
   - `graph.build(..)` constructs one graph object from a stream of node and edge
     items.
   - `graph.map(graph, ..)` maps graph, node, edge, source, and sink records to
-    new native data without changing topology.
+    new native data or structural patches without changing topology. `node` and
+    `edge` accept a callback or a dictionary keyed by current record names.
+    Each dictionary value is a patch, a callback receiving the full record, or
+    `none`. Unlisted records remain unchanged; unknown names are errors.
+  - `graph.cut(graph, left: left, right: right, boundary: patch)` opens a
+    weighted directed cut into a new graph, preserving Typst data and recording
+    origins. `graph.boundaries(view)` queries its current boundary endpoints.
   - `graph.node-data(graph, <name>)` and `graph.edge-data(graph, <name>)` return
     one named node or edge data.
   - `graph.update-node-data(graph, <name>, data)` and
@@ -374,6 +382,15 @@
   edge(source(<c>), <outgoing>)
   ```
 
+  `graph.edge(..., spring-length: 1.5)` multiplies that edge's existing preferred
+  spring length by `1.5` in force/anneal layout. The factor must be positive,
+  finite, and dimensionless; it applies to each node-to-control-point spring,
+  including the existing doubled rest length for dangling edges. The argument
+  defaults to `none`, preserving local or default `spring-length` statements;
+  a missing statement means `1`. An explicit argument overrides those statements.
+  This is not a guaranteed rendered length, a rendering option, or a change to
+  global layout `spring.length`; tree/dot/stable-layered layout is unaffected.
+
   `graph.build` does not interpolate statement strings on the Rust side. Use
   `graph.eval-fields` or `graph.map` when a default statement should turn into
   Typst content or structured data. The evaluation scope includes the
@@ -405,8 +422,9 @@
   === Placements
 
   `graph.pos` creates a first-class placement. The default `mode: "pin"` turns a
-  coordinate into a fixed layout constraint and a drawable position. Use
-  `mode: "start"` when the coordinate should only seed the layout:
+  coordinate into a fixed layout constraint and, for x/y, a drawable position.
+  Use `mode: "start"` when the coordinate should only seed the layout, or use
+  `graph.pin(value)` / `graph.start(value)` to choose a mode for one axis:
 
   ```typ
   #let g = build({
@@ -416,8 +434,35 @@
   })
   ```
 
-  `graph.group` links one coordinate across several nodes or edge control points.
-  A `side` of `"+"` keeps the coordinate positive, and `"-"` keeps it negative.
+  Auxiliary `z` is force-layout depth in the same numeric layout units as x/y,
+  not a Typst length or a rendered coordinate. Both `graph.build` and `graph.map`
+  accept `graph.pos(z: graph.pin(2))` for a hard raw-depth pin and
+  `graph.pos(z: graph.start(2))` for a movable initial depth. A bare
+  `graph.pos(z: 2)` follows `mode`, defaulting to `"pin"`:
+
+  ```typ
+  #let g = graph.map(g,
+    node: node => (pos: graph.pos(z: graph.pin(2))),
+    edge: edge => (pos: graph.pos(z: graph.start(-1))),
+  )
+  ```
+
+  A z-only placement leaves XY coordinates, constraints, and partial-position
+  flags alone, including automatic edge midpoint seeds. Omitting z preserves
+  existing depth metadata during unrelated XY patches. `ref`, `dx`, and `dy`
+  affect XY only; z groups, relative depth references, `dz`, and non-finite z
+  values are not supported.
+
+  Node and edge `statements` expose `"pos-z"` as finite numeric text and
+  `"pos-z-mode"` as `"pin"` or `"start"`. These describe the supplied raw pin
+  or seed; output `pos` remains a two-coordinate x/y record. The force solver
+  multiplies raw depth by a global scale that flattens to zero: a hard raw pin
+  remains fixed even when its effective depth is zero. Other layout backends do
+  not use z. Auxiliary depth does not change draw order or provide an over/under
+  rendering layer.
+
+  `graph.group` links one XY coordinate across several nodes or edge control
+  points. A `side` of "+" keeps the coordinate positive, and "-" keeps it negative.
   Use `start` to seed the shared coordinate without fixing it. Matching node and
   edge groups are one degree of freedom during force and annealing layouts, so
   repulsion and springs act on their combined force rather than being reconciled
@@ -503,7 +548,16 @@
   `mark-shift` for a signed arc-length adjustment along the derived path. This
   positioning is independent of whether the layer is straight or patterned.
   `"center-if-dangling"` centers a dangling mark but keeps an orientation-selected
-  paired mark at the source/sink split point.
+  paired mark at the source/sink split point. Heads span a chord between two
+  points on the full carrier, not a tangent. Triangle and straight heads place
+  their geometric tip and the center of their back on the curve; other marks
+  use their declared tip/base anchors. Centered heads straddle the requested
+  arc position, so the chord midpoint can lie off the curve. Near endpoints the
+  sampling interval moves inward, and short carriers compress the head to fit.
+  Longitudinal fitting preserves the head's width and stroke thickness.
+  Interior marks overlay the unshortened curve. With shortening enabled, filled
+  end heads meet the shaft at the inward contact; straight open heads keep the
+  shaft running to their tip.
 
   ```typ
   #let oriented-arrow = (
@@ -586,19 +640,52 @@
   decorations; node outsets then trim the shifted path, so shifted paths still
   start and end outside fitted node circles. Add `edge-length` or `length` to
   center-trim the shifted path to a fixed arc length, and add `edge-ratio` or
-  `ratio` to cap it by a fraction of the base edge length. `edge-resolve-length`
+  `ratio` to cap it by a fraction of the full offset path length. `edge-resolve-length`
   / `resolve-length` decides how to combine both limits: `"min"`/`"shorter"` (default), `"max"`/`"longer"`,
   `"length"`/`"fixed"`, `"ratio"`/`"relative"`, `"none"`/`"full"`, or a function
-  receiving `(base-length, length, ratio)`.
+  receiving `(offset-path-length, length, ratio)`.
+  Lengths and shortening distances are measured after offsetting, since a curved
+  parallel path need not have the same length as its centerline.
   For a finite layer, `shift` is an arc-length displacement along the complete
-  logical edge: positive values move toward the path end and values that would
+  offset path: positive values move toward the path end and values that would
   cross an endpoint are clamped. A layer can attach `label` content to its own
-  path. `label-side` chooses `"left"` or `"right"` relative to the local path
-  direction; `auto` follows the side selected by ordinary edge-label layout.
-  `label-gap` is
-  measured from the label box rather than its center, and `label-style` is
-  forwarded to CeTZ content drawing. This local measurement keeps the label clear
-  of its own path layer. The attached label replaces the ordinary painted edge
+  path. `label-shift` (default `0`) moves the label's reference point by signed
+  arc length from that derived path's midpoint, clamped to its endpoints:
+  `clamp(path-length / 2 + label-shift, 0, path-length)`. Positive values move
+  toward the path end, without moving or trimming the layer itself.
+  `label-side` chooses `"left"` or `"right"` relative to the local path direction
+  at the shifted point; `auto` follows the side selected by ordinary edge-label
+  layout.
+  With `label-style.anchor` omitted or set to `auto` (also `"auto"`), the label
+  is centered and moved until its entire CeTZ box clears the local tangent line
+  by `label-gap`. This measures the box, including text bounds, wrapping,
+  padding and rotation, not the nearest point of the finite curved shaft.
+  An explicit anchor, including `"center"`, instead sits at the shifted reference
+  point plus `label-gap` along the chosen normal, without any box-clearance
+  correction. Negative gaps are clamped to zero in both modes.
+  Other `label-style` fields are forwarded to CeTZ content drawing.
+  Automatic clearance is a local tangent-line heuristic, not collision
+  avoidance; explicit anchors intentionally allow the box to cross that line.
+  In `examples/map-style.typ`, `momentum-label-anchor` selects this behavior:
+  omit it or use `auto` for box clearance, or choose e.g. `"east"` for direct
+  anchor placement. `momentum-label-gap` supplies the gap in graph units.
+  The momentum label uses a separate full, unpainted offset-path layer, so
+  `momentum-label-shift` is independent of `momentum-arrow-length`, even when
+  arrow and label shifts are equal. It defaults to the requested
+  `momentum-arrow-shift`, not the arrow's clamped center. Near endpoints, the
+  label point can therefore travel farther than the finite arrow's center;
+  changing arrow length never moves the label.
+
+  Import `momentum as mom` from `examples/map-style.typ` for compact, sparse
+  options. `mom(side: "right", length: .7, shift: -.4,
+  label: (gap: .2, shift: -.75, anchor: "south-west"))` expands to the existing
+  `momentum-arrow-*` and `momentum-label-*` fields. Arrow options are `side`,
+  `offset`, `length`, and `shift`; label options are `gap`, `shift`, and `anchor`.
+  Only supplied options are emitted, so `mom(label: (gap: .2))` preserves an
+  inherited arrow offset or label shift. Combine the result with other edge
+  patches using dictionary addition, or spread it into `edge(..)`.
+
+  The attached label replaces the ordinary painted edge
   label, while that ordinary label may still supply the pre-layout size used by
   label layout and side selection; attached labels do not add a second collision
   constraint.
@@ -721,14 +808,25 @@
   `graph.info(g)` returns graph metadata. `nodes(g)` returns node records,
   and `edges(g)` returns edge records. Node and edge record `name` values are
   Typst labels when present. Pass `subgraph: sg` to filter nodes
-  or edges by a subgraph object.
+  or edges by a compatible subgraph object. Nodes must be incident to a selected
+  half-edge; an edge is included if either half is selected, but its record keeps
+  both available endpoints. These queries do not extract or open topology.
+
+  After `graph.cut`, node, edge, and half-edge records carry `origin` relative
+  to the immediate input graph. Boundary nodes and dangling cut edges also carry
+  `boundary`. Use `graph.boundaries(view)` for a uniform endpoint query, including
+  current positions after placement or layout. Auxiliary nodes remain visible in
+  `graph.nodes(view)`; filter with `node.boundary == none` to exclude them.
 
   `graph.join(left, right, key: "statement")` joins matching dangling half edges.
   The key is read from half-edge statements or numeric ids and can be
-  `"statement"`, `"compass"`, or `"id"`.
+  `"statement"`, `"compass"`, or `"id"`. Its existing Typst-sidecar data loss is
+  not fixed by the cut API; do not use it as a data-preserving inverse of `cut`.
 
   `graph.cycles(g)` returns subgraph objects for a cycle basis.
-  `graph.forests(g)` returns subgraph objects for spanning forests.
+  `graph.forests(g)` returns subgraph objects for spanning forests. Both return
+  arrays of the same topology-bound dictionaries accepted by `subgraph`, graph
+  queries, `layout`, and `draw`, not arrays of raw selection bytes.
 ]
 
 #let layout-concepts = [
@@ -847,11 +945,34 @@
   the same vertex-vertex, edge-vertex, incidence spring, local edge-edge,
   dangling-edge, dangling-centroid, and center terms. `step` is the integration
   step, `delta` clamps per-step movement, `steps` and `epochs` set the iteration
-  budget, `cool` shrinks
-  the step after each epoch, and `early-tol` stops when movement is small.
-  `z-spring` and `z-spring-growth` are force-only helpers: the integrator gives
-  points temporary z coordinates to break overlaps and pulls them back toward the
-  2D plane.
+  budget, and `cool` shrinks the step after each epoch. `early-tol` can stop the
+  run when movement is small only after the effective depth scale reaches zero;
+  small movement or a cooled-to-zero step cannot skip flattening.
+
+  The force-only `depth-scale` (default `1.0`) and `flattening-end` (default `0.5`)
+  control auxiliary depth. `depth-scale` must be finite and non-negative;
+  `flattening-end` must be finite and in `0..=1`. They can be supplied as flat
+  arguments or in `solver: (depth-scale: 1.0, flattening-end: 0.5)`; grouped
+  values override flat ones. The old depth-spring controls are not aliases.
+
+  Effective depth is `scale * raw-z`. The integrator starts with auxiliary raw
+  depths to break overlaps and smoothly reduces `scale` from `depth-scale` to
+  zero over the initial `flattening-end` fraction of the total `steps` × `epochs`
+  iteration budget. For normalized progress `u` from 0 to 1 over that interval,
+  the smoothstep scale is `depth-scale * (1 - u)^2 * (1 + 2 * u)`. The remaining
+  iterations relax projected overlaps with effective depth exactly zero, so
+  repulsion cannot be satisfied by invisible separation. `flattening-end: 0`
+  or `depth-scale: 0` starts in 2D; `flattening-end: 1` still evaluates the final
+  iteration on the exact plane.
+
+  There is a single original iteration budget and cooling schedule: flattening
+  neither adds a second phase nor restarts `step`. Unpinned raw depths stay
+  bounded by the initial spread and supplied depth magnitudes; hard raw-depth
+  pins remain fixed even after their effective depth has flattened to zero.
+  XY pins, shared coordinates, and fixed subgraph boundaries apply throughout;
+  label layout runs only after this single graph pass. Output positions remain
+  2D, and auxiliary z does not alter draw order. Flattening is exact, while force
+  convergence remains limited by the iteration budget and movement tolerance.
 
   `directional-force` is applied in both modes as an extra bias derived from
   pin/port direction constraints.
@@ -873,14 +994,155 @@
 #let subgraph-concepts = [
   === Subgraphs
 
-  Subgraph objects are opaque zero-copy values.
+  A subgraph is a dictionary containing half-edge membership, a topology
+  signature, subgraph-wide `data`, and per-half-edge `hedge-data`. Annotations
+  remain Typst values: content and callbacks are not serialized through Wasm.
+  Independent selections can annotate the same hedge without changing its graph
+  data or each other.
 
+  - `subgraph.select(g, nodes: (), edges: (), source: (), sink: (), hedges: ())`
+    selects the union of the supplied references. Node and edge references are
+    Typst labels or numeric IDs, supplied in arrays. `nodes` selects incident
+    hedges, `edges` selects both available halves, and `source` / `sink` selects
+    the named edges' structural halves, independently of drawing orientation.
+    `hedges` selects exact numeric hedge IDs. Unknown references and missing
+    requested halves are errors; an isolated node contributes no hedges.
   - `subgraph.label(g, label)` constructs a subgraph from a base62 label.
   - `subgraph.bits(g, bits)` constructs a subgraph from a boolean hedge array.
   - `subgraph.compass(g, compass)` selects half edges with a DOT compass point.
-  - `subgraph.to-label(sg)` returns the base62 label.
-  - `subgraph.hedges(sg)` returns included hedge indices.
-  - `subgraph.contains(sg, hedge)` tests hedge membership.
+  - `subgraph.hedges(sg)`, `subgraph.contains(sg, hedge)`, and
+    `subgraph.contains-edge(sg, edge)` inspect membership. The last checks whether
+    either half of an edge record is selected.
+  - `subgraph.complement(g, sg)` selects all other hedges. It preserves
+    subgraph-wide data, but the newly selected hedges have no annotations.
+
+  `subgraph.with-data(g, sg, data: value, hedge: updater)` returns an annotated
+  selection. `data: auto` preserves subgraph-wide data and `hedge: none` preserves
+  hedge annotations. A non-function `hedge` value replaces every selected
+  hedge's annotation. A callback receives its original endpoint record plus
+  `edge`, `edge-name`, and `flow`; `data` holds the existing selection annotation
+  and `graph-data` holds the graph's half-edge data. Its return value replaces
+  the annotation, even when it is `none`. To store a callback as an annotation,
+  return it from the updater rather than passing it as the updater itself.
+  `subgraph.hedge-data(sg, h)` reads one selected hedge's annotation.
+
+  Graph-aware consumers check a signature of IDs, names, and source/sink
+  incidence, not graph identity or placement. Selections survive layout and
+  drawing/data changes, but incompatible topology or names are rejected.
+  Re-select on a cut view rather than reusing its master's selections.
+
+  *Breaking change:* raw subgraph bytes are no longer accepted by public APIs.
+  Use the constructors above, or the wrapped results of `graph.cycles` and
+  `graph.forests`, and pass the whole object, not its internal `bytes` field.
+  `subgraph.to-label(sg)` exports membership only: rebuilding with
+  `subgraph.label(g, label)` binds it to that graph but does not restore annotations
+  or the old topology signature. Keep the object to preserve Typst sidecar data;
+  a base62 label is not a complete serialization of an annotated selection.
+
+  Passing `subgraph: sg` to `draw` highlights half-edges, while `layout` restricts
+  placement or optimization. Neither opens edges; use `graph.cut` for that.
+
+  === Directed Cut Views
+
+  `graph.cut(g, left: left, right: right, boundary: patch)` opens *one weighted
+  directed cut* and leaves `g` unchanged. The two selections are its drawing
+  sides, not separate cuts or a partition of the vertices. They must be disjoint
+  and contain exactly opposite halves of every selected paired edge in `g`.
+  Already dangling edges cannot be selected for opening.
+
+  Think of the drawing boundaries as L and R, with a positive seam passage from
+  R to L. Selecting an edge's source on R and sink on L follows that positive
+  direction; swapping them reverses it. This is independent of superficial
+  drawing orientation, including reversed fermion arrows. Side names do not
+  place endpoints automatically: `boundary` supplies the view's geometry.
+
+  An annotation `(winding: n)` on either selected half requests a positive integer
+  number of same-direction passages; it defaults to one. If both halves specify
+  winding, they must agree. Each selected edge becomes a source stub, a sink
+  stub, and `n - 1` middle segments. Thus winding two produces three segments
+  without separate named seams or a caller-supplied ordering of cut objects.
+  Winding is not a net count of cancelling back-and-forth crossings.
+
+  This small example uses the manual's existing imports. It stores content on
+  the original edge and endpoints, annotates the cut sides, and opens one edge
+  with winding two. The boundary callback places both ordinary free endpoints
+  and the generated middle endpoints using the same record interface:
+
+  ```typ
+  #let master = graph.build({
+    node(<a>, pos: graph.pos(x: 0, y: 0))
+    node(<b>, pos: graph.pos(x: 0, y: -2))
+    edge(
+      <link>,
+      source(<a>, caption: [output]),
+      sink(<b>, caption: [input]),
+      label: [connection],
+    )
+  })
+  #let left = subgraph.with-data(
+    master, subgraph.select(master, sink: (<link>,)),
+    data: [left boundary],
+    hedge: h => (winding: 2, caption: h.graph-data.caption),
+  )
+  #let right = subgraph.with-data(
+    master, subgraph.select(master, source: (<link>,)),
+    data: [right boundary],
+    hedge: h => (caption: h.graph-data.caption),
+  )
+  #let view = graph.cut(master, left: left, right: right, boundary: record => {
+    let b = record.boundary
+    (pos: graph.pos(
+      x: if b.side == "left" { -3 } else { 3 },
+      y: -2 * b.crossing,
+    ))
+  })
+  #let view = layout(view, layout-algo: "tree")
+  #assert(graph.edges(master).len() == 1)
+  #assert(graph.edges(view).len() == 3)
+  #assert(graph.edge-data(view, <link.1>).label == [connection])
+  #assert(graph.boundaries(view).len() == 4)
+  #draw(view, edge-label: edge => edge.label)
+  ```
+
+  Fragments are named `<link.0>` through `<link.n>` in underlying source-to-sink
+  order, irrespective of L/R or drawing arrows. Unnamed edges use the native
+  prefix `__linnest_cut_edge_ID`; generated name collisions are errors. Prefer
+  explicit edge names when patching a view. Node, edge, and hedge `origin` refer
+  to the immediate input graph, including on repeated cuts. Edge origins contain
+  the input `edge` ID and `name`, plus `segment` and `winding`; uncut edges have
+  `segment: none` and `winding: 0`. Node and hedge origins are input IDs; newly
+  generated nodes have `origin: none`.
+
+  Physical graph, node, edge, and half-edge Typst data are remapped, including
+  content and callbacks. Middle source hedges inherit the original sink hedge's
+  data, and middle sink hedges inherit the original source's data, following the
+  boundary side they continue. The cut resets fragment geometry for re-layout,
+  rather than copying an old midpoint pin to new endpoints. Apply view-specific
+  bends, placement, labels, and `crossing-under` targets with `graph.map`; a
+  reference to a split edge needs the appropriate fragment name.
+
+  The `boundary` callback runs only on newly created endpoints, receiving a node
+  or dangling-edge record and returning ordinary `graph.map`-style placement/data
+  patches. Its `record.boundary` has
+  output `edge` and optional `node` IDs, the original side's `hedge`, `side`
+  (`"left"` or `"right"`), zero-based `crossing` along underlying flow, `data`
+  from that hedge's annotation, `cut-data` from that side's subgraph-wide data,
+  and the fragment's `origin` at creation. For example, the code above preserves
+  each endpoint caption in `boundary.data.caption`.
+
+  On subsequent cuts, `boundary.origin` and `boundary.hedge` still refer to the
+  input to the cut that created the endpoint; `side`, `crossing`, `data`, and
+  `cut-data` are retained. Only `boundary.edge` and `boundary.node` remap to
+  current anchors. Inherited boundaries retain their placements and annotations
+  without invoking the callback again.
+
+  `graph.boundaries(view)` returns these descriptors plus current `pos`, not
+  coordinates cached at cut time. A dangling endpoint uses its edge position
+  and has `node: none`; a middle endpoint uses its auxiliary node position.
+  Query after layout, or inside `draw-after`, to group solved endpoints into
+  background boxes with existing CeTZ primitives. Auxiliary boundary nodes are
+  automatically zero-sized and unpainted, including their labels and custom
+  node-drawing callbacks; they remain addressable anchors for incident edges.
 ]
 
 #let _show-example-source(code, ..args) = {

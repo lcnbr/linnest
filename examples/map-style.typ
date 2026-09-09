@@ -1,4 +1,4 @@
-#let massless = 0.5mm
+#let massless = 0.5pt
 #let massive = 1pt
 #let edge-stroke = (paint: black, thickness: massless, cap: "round")
 
@@ -10,17 +10,17 @@
     anchor: "center",
     shorten-to: auto,
   ),
-  scale: 1.20,
+  scale: .5,
 )
 #let momentum-mark = (
   end: (
-    symbol: ")>",
+    symbol: "straight",
     fill: black,
-    stroke: black + 0.2pt,
+    stroke: black + 0.4pt,
     anchor: "center",
     shorten-to: auto,
   ),
-  scale: 0.90,
+  scale: 0.50,
 )
 
 #let fermion = (
@@ -32,13 +32,13 @@
 #let photon = (
   stroke: edge-stroke,
   pattern: "wave",
-  pattern-amplitude: 0.20,
+  pattern-amplitude: 0.10,
   pattern-wavelength: 0.50,
 )
 #let gluon = (
   stroke: edge-stroke,
   pattern: "coil",
-  pattern-amplitude: 0.25,
+  pattern-amplitude: 0.15,
   pattern-wavelength: 0.60,
   pattern-coil-longitudinal-scale: 1.60,
 )
@@ -53,6 +53,24 @@
   "scalar": scalar,
   "ghG": scalar,
 )
+
+// Sparse edge options: omitted settings preserve inherited defaults. Arrow
+// shift and label.shift remain independent; only their field names are expanded.
+#let momentum(label: (:), ..arrow) = {
+  assert(arrow.pos().len() == 0, message: "momentum: expected named options")
+  assert(type(label) == dictionary, message: "momentum: label must be a dictionary")
+  let fields = (:)
+  for (kind, options, keys) in (
+    ("arrow", arrow.named(), ("side", "offset", "length", "shift")),
+    ("label", label, ("gap", "shift", "anchor")),
+  ) {
+    for (key, value) in options {
+      assert(key in keys, message: "momentum: unknown " + kind + " option " + key)
+      fields.insert("momentum-" + kind + "-" + key, value)
+    }
+  }
+  fields
+}
 
 #let _value(element, key, default) = element.fields.at(key, default: default)
 #let _text(element, key, default) = str(_value(element, key, default)).trim(
@@ -89,44 +107,57 @@
 #let _momentum-layers(edge) = {
   let shift = _number(edge, "momentum-arrow-shift", 0)
   let label-shift = _number(edge, "momentum-label-shift", shift)
+  let anchor = _value(edge, "momentum-label-anchor", auto)
   let offset = _number(edge, "momentum-arrow-offset", 0.62)
-  let label = [$p_(#edge.eid)$]
-  let arrow = (
+  let side = _value(edge, "momentum-arrow-side", auto)
+  let side = if side == auto { "auto" } else { str(side).trim("\"") }
+  assert(
+    side in ("auto", "left", "right"),
+    message: "momentum-arrow-side must be auto, left, or right",
+  )
+  // Explicit sides are relative to source -> sink and shared with the label carrier.
+  // The gap is in graph units: to the box for auto, or to an explicit anchor.
+  let geometry = (
     _route(edge)
       + (
-        offset: offset,
-        offset-side: "label",
-        length: _number(edge, "momentum-arrow-length", 1.70),
+        offset: if side == "auto" { offset } else {
+          calc.abs(offset) * if side == "left" { 1 } else { -1 }
+        },
+        offset-side: if side == "auto" { "label" } else { none },
+        label-side: if side == "auto" { auto } else { side },
+        label-gap: _number(edge, "momentum-label-gap", 0.45),
+        label-style: (anchor: if type(anchor) == str { anchor.trim("\"") } else { anchor }),
+      )
+  )
+  let arrow = (
+    geometry
+      + (
+        length: _number(edge, "momentum-arrow-length", 1.0),
         shift: shift,
         ratio: none,
         resolve-length: "length",
-        stroke: (paint: black, thickness: 1.2pt, cap: "round"),
+        stroke: (paint: black, thickness: 0.4pt, cap: "round"),
         mark: momentum-mark,
         mark-position: "end",
-        mark-orientation: "edge",
+        mark-orientation: "path",
       )
   )
-  // Put the complete measured label box beyond the momentum shaft. Normally
-  // it follows that shaft; an explicit label shift gets a tiny invisible path.
-  if label-shift == shift {
-    arrow += (label: label, label-gap: 0.45)
-    (arrow,)
-  } else {
-    (
-      arrow,
-      _route(edge)
-        + (
-          stroke: none,
-          offset: offset,
-          offset-side: "label",
-          length: 0.02,
-          shift: label-shift,
-          resolve-length: "length",
-          label: label,
-          label-gap: 0.45,
-        ),
-    )
-  }
+  // Auto clears the complete label box; explicit anchors use only the gap.
+  // The label defaults to the requested arrow shift, but follows a point on the
+  // full invisible path, so its endpoint clamps never depend on arrow length.
+  (
+    arrow,
+    geometry + (
+      length: none,
+      ratio: none,
+      resolve-length: "none",
+      shift: 0,
+      stroke: none,
+      mark: none,
+      label: edge.momentum,
+      label-shift: label-shift,
+    ),
+  )
 }
 
 #let edge-style(edge) = (
@@ -137,11 +168,11 @@
 #let node-style(node) = if _enabled(node, "hidden") {
   (radius: 0, fill: none, stroke: none)
 } else {
-  (radius: 0.28, fill: white, stroke: edge-stroke)
+  (radius: 0.18, fill: white, stroke: edge-stroke)
 }
 
-// The hidden ordinary label participates in layout and selects the side; the
-// visible label is attached to the momentum layer and follows its geometry.
+// The hidden ordinary label participates in layout and selects the automatic side;
+// an explicit momentum-arrow-side moves the visible label and momentum shaft together.
 #let graph-style = (
   unit: 1.35,
   node-label: none,
