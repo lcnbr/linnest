@@ -108,9 +108,12 @@
   pattern: none,
   pattern-amplitude: 0.1,
   pattern-wavelength: 1.0,
+  pattern-fit: false,
   pattern-phase: 0,
   pattern-samples-per-period: 16,
   pattern-coil-longitudinal-scale: 1.25,
+  pattern-endpoint-slope: 0,
+  pattern-natural-endpoints: false,
   pattern-accuracy: 0.001,
 )
 
@@ -517,6 +520,11 @@
   )
   same = (
     same
+      and _style-value(source-style, "pattern-fit")
+        == _style-value(sink-style, "pattern-fit")
+  )
+  same = (
+    same
       and _style-value(source-style, "pattern-phase")
         == _style-value(sink-style, "pattern-phase")
   )
@@ -529,6 +537,16 @@
     same
       and _style-value(source-style, "pattern-coil-longitudinal-scale")
         == _style-value(sink-style, "pattern-coil-longitudinal-scale")
+  )
+  same = (
+    same
+      and _style-value(source-style, "pattern-endpoint-slope")
+        == _style-value(sink-style, "pattern-endpoint-slope")
+  )
+  same = (
+    same
+      and _style-value(source-style, "pattern-natural-endpoints")
+        == _style-value(sink-style, "pattern-natural-endpoints")
   )
   same = (
     same
@@ -788,11 +806,8 @@
   calc.max(0.45, calc.min(4.0, 0.18 * dx + 0.3 * dy))
 }
 
-#let _anchor-control-distance(source-style, sink-style, start, route, end) = {
-  let value = _style-value(source-style, "anchor-control-distance")
-  if value == auto {
-    value = _style-value(sink-style, "anchor-control-distance")
-  }
+#let _anchor-control-distance(style, start, route, end) = {
+  let value = _style-value(style, "anchor-control-distance")
   if value == auto {
     _auto-anchor-control-distance(start, route, end)
   } else {
@@ -836,22 +851,24 @@
   route,
   sink-anchor,
   end,
-  amount,
+  source-amount,
+  sink-amount,
 ) = {
   let source-guide = _anchor-control-guide(
     source-anchor,
     start,
     _point-lerp(start, route, 1 / 3),
-    amount,
+    source-amount,
   )
   let sink-guide = _anchor-control-guide(
     sink-anchor,
     end,
     _point-lerp(end, route, 1 / 3),
-    amount,
+    sink-amount,
   )
   let route-direction = _point-sub(end, start)
   let route-direction-length = _point-length(route-direction)
+  // Share a middle handle to keep the two halves tangent-continuous.
   let route-handle = if route-direction-length == 0 {
     (0, 0)
   } else {
@@ -860,7 +877,7 @@
     )
     _point-scale(
       route-direction,
-      calc.min(amount, max-handle) / route-direction-length,
+      calc.min(source-amount, sink-amount, max-handle) / route-direction-length,
     )
   }
   let source-route-guide = _point-sub(route, route-handle)
@@ -1001,25 +1018,25 @@
       accuracy,
     )
   }
+  let source-amount = _anchor-control-distance(source-style, start, route, end)
+  let sink-amount = _anchor-control-distance(sink-style, start, route, end)
   if (
     route-mode != "direct"
       and route-points-mode == "through"
       and (source-route.len() > 0 or sink-route.len() > 0)
   ) {
-    let amount = _anchor-control-distance(
-      source-style,
-      sink-style,
-      start,
-      route,
-      end,
-    )
     let source-amount = _route-aware-anchor-amount(
       start,
-      amount,
+      source-amount,
       source-route,
       route,
     )
-    let sink-amount = _route-aware-anchor-amount(end, amount, sink-route, route)
+    let sink-amount = _route-aware-anchor-amount(
+      end,
+      sink-amount,
+      sink-route,
+      route,
+    )
     let source-guide = _anchor-control-guide(
       source-anchor,
       start,
@@ -1055,20 +1072,14 @@
     )
   }
   if route-mode in ("direct", "edge-pos") {
-    let amount = _anchor-control-distance(
-      source-style,
-      sink-style,
-      start,
-      route,
-      end,
-    )
     let split = _anchored-cubic-route-split(
       start,
       source-anchor,
       route,
       sink-anchor,
       end,
-      amount,
+      source-amount,
+      sink-amount,
     )
     return _split-edge-geometry(
       split.source,
@@ -1082,24 +1093,17 @@
       accuracy,
     )
   } else if route-mode == "hobby-through" {
-    let amount = _anchor-control-distance(
-      source-style,
-      sink-style,
-      start,
-      route,
-      end,
-    )
     let source-guide = _anchor-control-guide(
       source-anchor,
       start,
       _point-lerp(start, route, 1 / 3),
-      amount,
+      source-amount,
     )
     let sink-guide = _anchor-control-guide(
       sink-anchor,
       end,
       _point-lerp(end, route, 1 / 3),
-      amount,
+      sink-amount,
     )
     let split = curve-api.split-through(
       (start, source-guide, route, sink-guide, end),
@@ -1120,20 +1124,13 @@
       accuracy,
     )
   }
-  let amount = _anchor-control-distance(
-    source-style,
-    sink-style,
-    start,
-    route,
-    end,
-  )
   let source-path = curve-api.hobby-spline(
-    _anchor-points(start, source-anchor, route, amount),
+    _anchor-points(start, source-anchor, route, source-amount),
     omega: omega,
     accuracy: accuracy,
   )
   let sink-path = curve-api.hobby-spline(
-    _anchor-points(end, sink-anchor, route, amount, reverse: true),
+    _anchor-points(end, sink-anchor, route, sink-amount, reverse: true),
     omega: omega,
     accuracy: accuracy,
   )
@@ -1295,21 +1292,6 @@
   )
 }
 
-#let _pattern(segment, style, phase, anchor-start, anchor-end) = {
-  let pattern-style = _pattern-style(style)
-  curve-api.pattern(
-    curve-api.from-cubic(segment),
-    pattern: pattern-style.pattern,
-    amplitude: pattern-style.pattern-amplitude,
-    wavelength: pattern-style.pattern-wavelength,
-    phase: if phase == auto { pattern-style.pattern-phase } else { phase },
-    samples-per-period: pattern-style.pattern-samples-per-period,
-    coil-longitudinal-scale: pattern-style.pattern-coil-longitudinal-scale,
-    anchor-start: anchor-start,
-    anchor-end: anchor-end,
-    accuracy: pattern-style.pattern-accuracy,
-  )
-}
 
 #let _bezier-element(segment, style) = {
   if _has-mark(style) {
@@ -1328,6 +1310,10 @@
   )
 }
 
+#let _segments-path(segments) = {
+  curve-api.path(..segments.map(curve-api.from-cubic))
+}
+
 #let _segments-elements(segments, style, phase, anchor-start, anchor-end) = {
   if _style-value(style, "label-only") { return (elements: (), length: 0) }
   if _has-mark(style) {
@@ -1342,26 +1328,48 @@
   let elements = ()
   let length = 0
   if _has-pattern(style) {
-    let current-phase = if phase == auto {
-      _style-value(style, "pattern-phase")
-    } else { phase }
-    let wavelength = _style-value(style, "pattern-wavelength")
-    for (index, segment) in segments.enumerate() {
-      let piece = _pattern(
-        segment,
-        style,
-        current-phase,
-        anchor-start and index == 0,
-        anchor-end and index == segments.len() - 1,
+    let pattern-style = _pattern-style(style)
+    let path = _segments-path(segments)
+    length = curve-api.length(path, accuracy: pattern-style.pattern-accuracy)
+    let pattern = pattern-style.pattern
+    let wavelength = pattern-style.pattern-wavelength
+    let samples = pattern-style.pattern-samples-per-period
+    let phase = if phase == auto { pattern-style.pattern-phase } else { phase }
+    assert(wavelength > 0, message: "pattern-wavelength must be positive")
+    // Fit only complete edges; split styles and crossing gaps retain phase continuity.
+    let natural = pattern-style.pattern-natural-endpoints and anchor-start and anchor-end
+    if natural and length > 0 {
+      assert(
+        type(pattern) == str and pattern.trim() in ("coil", "helix", "spring"),
+        message: "pattern-natural-endpoints requires a built-in coil",
       )
-      elements.push(curve-api.to-cetz(piece, .._draw-style(style)))
-      let piece-length = _segment-length(segment, _style-value(
-        style,
-        "pattern-accuracy",
-      ))
-      length = length + piece-length
-      current-phase = current-phase + 2 * calc.pi * piece-length / wavelength
+      pattern = curve-api.coil(
+        fit-length: length,
+        amplitude: pattern-style.pattern-amplitude,
+        wavelength: wavelength,
+        samples-per-period: samples,
+        longitudinal-scale: pattern-style.pattern-coil-longitudinal-scale,
+      )
+      wavelength = length
+      samples = pattern.points.len() - 1
+      phase = 0
+    } else if pattern-style.pattern-fit and anchor-start and anchor-end and length > 0 {
+      wavelength = length / calc.max(1, calc.round(length / wavelength))
     }
+    let patterned = curve-api.pattern(
+      path,
+      pattern: pattern,
+      amplitude: pattern-style.pattern-amplitude,
+      wavelength: wavelength,
+      phase: phase,
+      samples-per-period: samples,
+      coil-longitudinal-scale: pattern-style.pattern-coil-longitudinal-scale,
+      anchor-start: anchor-start,
+      anchor-end: anchor-end,
+      endpoint-slope: pattern-style.pattern-endpoint-slope,
+      accuracy: pattern-style.pattern-accuracy,
+    )
+    elements.push(curve-api.to-cetz(patterned, .._draw-style(style)))
   } else {
     for segment in segments {
       elements.push(curve-api.to-cetz(
@@ -1373,9 +1381,6 @@
   (elements: elements, length: length)
 }
 
-#let _segments-path(segments) = {
-  curve-api.path(..segments.map(curve-api.from-cubic))
-}
 
 #let _mark-carrier-elements(path, style, paint: false) = {
   if style == none or not _has-mark(style) { return () }
