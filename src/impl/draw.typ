@@ -633,10 +633,6 @@
   }
 }
 
-#let _segment-length(segment, accuracy) = {
-  curve-api.length(curve-api.from-cubic(segment), accuracy: accuracy)
-}
-
 #let _visible-half-outsets(
   base-length,
   half-start,
@@ -1314,7 +1310,73 @@
   curve-api.path(..segments.map(curve-api.from-cubic))
 }
 
-#let _segments-elements(segments, style, phase, anchor-start, anchor-end) = {
+// Continuous runs of a segment list; offsets of cornered paths can leave gaps.
+#let _continuous-paths(segments) = {
+  let runs = ()
+  for element in curve-api.elements(_segments-path(segments)) {
+    if element.kind == "move" { runs.push(()) }
+    runs.last().push(element)
+  }
+  runs.map(curve-api.from-elements)
+}
+
+// Pattern one continuous path. A whole edge (`fits`) gets integer fitting, or a
+// natural-endpoint coil for built-in coil strings. `split-at` cuts the single
+// patterned path into `parts` at arc distances along `path`.
+#let _pattern-run(
+  path,
+  pattern-style,
+  phase,
+  anchor-start,
+  anchor-end,
+  fits,
+  length,
+  split-at: (),
+) = {
+  let pattern = pattern-style.pattern
+  let wavelength = pattern-style.pattern-wavelength
+  let samples = pattern-style.pattern-samples-per-period
+  let coil = type(pattern) == str and pattern.trim() in ("coil", "helix", "spring")
+  if fits and pattern-style.pattern-natural-endpoints and coil {
+    pattern = curve-api.coil(
+      fit-length: length,
+      amplitude: pattern-style.pattern-amplitude,
+      wavelength: wavelength,
+      samples-per-period: samples,
+      longitudinal-scale: pattern-style.pattern-coil-longitudinal-scale,
+    )
+    wavelength = length
+    samples = pattern.points.len() - 1
+    phase = 0
+  } else if fits and pattern-style.pattern-fit {
+    wavelength = length / calc.max(1, calc.round(length / wavelength))
+  }
+  curve-api.pattern(
+    path,
+    pattern: pattern,
+    amplitude: pattern-style.pattern-amplitude,
+    wavelength: wavelength,
+    phase: phase,
+    samples-per-period: samples,
+    coil-longitudinal-scale: pattern-style.pattern-coil-longitudinal-scale,
+    anchor-start: anchor-start,
+    anchor-end: anchor-end,
+    endpoint-slope: pattern-style.pattern-endpoint-slope,
+    accuracy: pattern-style.pattern-accuracy,
+    split-at: split-at,
+  )
+}
+
+// `complete` marks a whole edge; split-style halves pass `false` so they keep
+// their anchoring but never get coil fitting or natural endpoints.
+#let _segments-elements(
+  segments,
+  style,
+  phase,
+  anchor-start,
+  anchor-end,
+  complete: true,
+) = {
   if _style-value(style, "label-only") { return (elements: (), length: 0) }
   if _has-mark(style) {
     return _derived-path-elements(
@@ -1323,53 +1385,44 @@
       phase,
       anchor-start,
       anchor-end,
+      complete: complete,
     )
   }
   let elements = ()
   let length = 0
   if _has-pattern(style) {
     let pattern-style = _pattern-style(style)
-    let path = _segments-path(segments)
-    length = curve-api.length(path, accuracy: pattern-style.pattern-accuracy)
-    let pattern = pattern-style.pattern
-    let wavelength = pattern-style.pattern-wavelength
-    let samples = pattern-style.pattern-samples-per-period
     let phase = if phase == auto { pattern-style.pattern-phase } else { phase }
-    assert(wavelength > 0, message: "pattern-wavelength must be positive")
-    // Fit only complete edges; split styles and crossing gaps retain phase continuity.
-    let natural = pattern-style.pattern-natural-endpoints and anchor-start and anchor-end
-    if natural and length > 0 {
-      assert(
-        type(pattern) == str and pattern.trim() in ("coil", "helix", "spring"),
-        message: "pattern-natural-endpoints requires a built-in coil",
-      )
-      pattern = curve-api.coil(
-        fit-length: length,
-        amplitude: pattern-style.pattern-amplitude,
-        wavelength: wavelength,
-        samples-per-period: samples,
-        longitudinal-scale: pattern-style.pattern-coil-longitudinal-scale,
-      )
-      wavelength = length
-      samples = pattern.points.len() - 1
-      phase = 0
-    } else if pattern-style.pattern-fit and anchor-start and anchor-end and length > 0 {
-      wavelength = length / calc.max(1, calc.round(length / wavelength))
-    }
-    let patterned = curve-api.pattern(
-      path,
-      pattern: pattern,
-      amplitude: pattern-style.pattern-amplitude,
-      wavelength: wavelength,
-      phase: phase,
-      samples-per-period: samples,
-      coil-longitudinal-scale: pattern-style.pattern-coil-longitudinal-scale,
-      anchor-start: anchor-start,
-      anchor-end: anchor-end,
-      endpoint-slope: pattern-style.pattern-endpoint-slope,
-      accuracy: pattern-style.pattern-accuracy,
+    assert(
+      pattern-style.pattern-wavelength > 0,
+      message: "pattern-wavelength must be positive",
     )
-    elements.push(curve-api.to-cetz(patterned, .._draw-style(style)))
+    // Pattern each continuous run separately so gaps are never bridged, carrying
+    // the phase across them and anchoring only the outer ends.
+    let runs = _continuous-paths(segments)
+    for (index, path) in runs.enumerate() {
+      let run-length = curve-api.length(
+        path,
+        accuracy: pattern-style.pattern-accuracy,
+      )
+      // Fit only complete continuous edges; split styles and crossing gaps retain
+      // phase continuity.
+      let fits = (
+        complete and runs.len() == 1 and anchor-start and anchor-end and run-length > 0
+      )
+      let patterned = _pattern-run(
+        path,
+        pattern-style,
+        phase,
+        anchor-start and index == 0,
+        anchor-end and index == runs.len() - 1,
+        fits,
+        run-length,
+      )
+      elements.push(curve-api.to-cetz(patterned, .._draw-style(style)))
+      length += run-length
+      phase += 2 * calc.pi * run-length / pattern-style.pattern-wavelength
+    }
   } else {
     for segment in segments {
       elements.push(curve-api.to-cetz(
@@ -1631,7 +1684,14 @@
   )
 }
 
-#let _derived-path-elements(path, style, phase, anchor-start, anchor-end) = {
+#let _derived-path-elements(
+  path,
+  style,
+  phase,
+  anchor-start,
+  anchor-end,
+  complete: true,
+) = {
   let segments = curve-api.segments(path)
   if segments.len() == 0 {
     return (elements: (), length: 0)
@@ -1644,6 +1704,7 @@
         phase,
         anchor-start,
         anchor-end,
+        complete: complete,
       )
       (
         elements: painted.elements + _mark-carrier-elements(path, style),
@@ -1659,7 +1720,14 @@
       )
     }
   } else {
-    _segments-elements(segments, style, phase, anchor-start, anchor-end)
+    _segments-elements(
+      segments,
+      style,
+      phase,
+      anchor-start,
+      anchor-end,
+      complete: complete,
+    )
   }
 }
 
@@ -1669,6 +1737,7 @@
   phase,
   anchor-start,
   anchor-end,
+  complete: true,
 ) = {
   if segments.len() == 0 {
     (elements: (), length: 0)
@@ -1679,6 +1748,7 @@
       phase,
       anchor-start,
       anchor-end,
+      complete: complete,
     )
   }
 }
@@ -1916,6 +1986,30 @@
   )
 }
 
+// Pattern the whole edge once, as a complete edge, then cut it where the source
+// half ends so each half keeps its own stroke. Returns `none` when the whole
+// path is not continuous.
+#let _split-pattern-elements(whole, split, source-style, sink-style) = {
+  let runs = _continuous-paths(whole)
+  if runs.len() != 1 { return none }
+  let pattern-style = _pattern-style(source-style)
+  let length = curve-api.length(runs.first(), accuracy: pattern-style.pattern-accuracy)
+  let patterned = _pattern-run(
+    runs.first(),
+    pattern-style,
+    pattern-style.pattern-phase,
+    true,
+    true,
+    length > 0,
+    length,
+    split-at: (split,),
+  )
+  patterned
+    .parts
+    .zip((source-style, sink-style))
+    .map(((part, style)) => curve-api.to-cetz(part, .._draw-style(style)))
+}
+
 #let _pattern-edge-halves(halves, source-style, sink-style) = {
   let elements = ()
   let whole = halves.at("whole", default: none)
@@ -1927,6 +2021,23 @@
       true,
       true,
     ).elements
+  }
+  // Halves that share a pattern but differ in stroke follow one whole-edge pattern.
+  if (
+    whole != none
+      and _same-pattern-geometry(source-style, sink-style)
+      and not _has-mark(source-style)
+      and not _has-mark(sink-style)
+      and not _style-value(source-style, "label-only")
+      and not _style-value(sink-style, "label-only")
+      and halves.source.len() > 0
+  ) {
+    let split = curve-api.length(
+      _segments-path(halves.source),
+      accuracy: _pattern-style(source-style).pattern-accuracy,
+    )
+    let split-elements = _split-pattern-elements(whole, split, source-style, sink-style)
+    if split-elements != none { return split-elements }
   }
   if _same-pattern-geometry(source-style, sink-style) {
     let source = _derived-segments-elements(
@@ -1971,6 +2082,7 @@
       auto,
       true,
       true,
+      complete: false,
     ).elements
     let sink-elements = _derived-segments-elements(
       halves.sink,
@@ -1978,6 +2090,7 @@
       auto,
       true,
       true,
+      complete: false,
     ).elements
     if _has-mark(source-style) and not _has-mark(sink-style) {
       for element in sink-elements {
@@ -3149,6 +3262,7 @@
                     auto,
                     true,
                     true,
+                    complete: false,
                   ).elements
                 ) {
                   elements.push(element)
@@ -3161,6 +3275,7 @@
                     auto,
                     true,
                     true,
+                    complete: false,
                   ).elements
                 ) {
                   elements.push(element)

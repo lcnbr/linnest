@@ -271,32 +271,7 @@ let g = graph.build(default-edge-data: edge-data, master)
   ))
 
   $
-    #diagram(xbox, options: sum-layouts.at(0), cut-x: -1,cut-y: -.8, initial-cut: 0, draw-after: (g, bounds) => {
-      // if draw-initials {
-      //   let nodes = graph.nodes(g)
-      //   // The two single-replacement cuts cross the other external leg;
-      //   // the matching pair opens both, with each branch reaching the diagram boundary.
-      //   for (name, side, style, both) in (
-      //     (<c>, 1, 1, false),
-      //     (<b>, -1, 2, false),
-      //     (<c>, 1, 3, true),
-      //     (<b>, -1, 3, true),
-      //   ) {
-      //     let p = nodes.find(n => n.name == name).pos
-      //     let (near, far) = if side > 0 { (bounds.top, bounds.bottom) } else { (bounds.bottom, bounds.top) }
-      //     let outer = if side > 0 { bounds.right } else { bounds.left }
-      //     // Meet the top/bottom normally; the paired cut also exits the sides horizontally.
-      //     let points = if both {
-      //       ((p.x - side * .8, near), (outer, p.y - side * 1.7), (p.x - side * .8, p.y - side * .6), (p.x + side * .1, p.y - side * 1.7))
-      //     } else {
-      //       ((p.x - side * 1.25, near), (outer - side, far), (p.x - side * 1.25, p.y - side * 2), (outer - side, p.y - side * .8))
-      //     }
-      //     // Both branches cross D6 in the same direction, retaining its middle segment.
-      //     if side < 0 { points = (points.at(1), points.at(0), points.at(3), points.at(2)) }
-      //     cetz.draw.bezier(..points, stroke: initial-cut-styles.at(style))
-      //   }
-      // }
-    })+
+    #diagram(xbox, options: sum-layouts.at(0), cut-x: -1,cut-y: -.8, initial-cut: 0)+
     #diagram(xbox-opened, options: sum-layouts.at(1), cut-x: -.4, cut-y: -0.8, initial-cut: 1)+
     #diagram(xbox-opened2, options: sum-layouts.at(2), cut-x: -1.5, cut-y: -0.8, initial-cut: 2)+
     #diagram(xbox-cut, options: sum-layouts.at(3), cut-y: -0.8,cut-x:-0.3, initial-cut: 3) = op("disc")_(p_1^2) op("disc")_(p_2^2)

@@ -7,7 +7,22 @@
 #let math-font-size = 10pt
 
 // Native font and stroke sizes are independent of the graph coordinate unit.
-#let graph-style = feynman.graph-style(unit: 2.6mm, line-width: 0.5pt)
+// These diagrams use small solid vertices and tighter gluon coils fitted
+// between vertices, set through the map-style scope rather than its defaults.
+#let graph-style = {
+  let style = feynman.graph-style(unit: 2.6mm, line-width: 0.5pt, node-radius: 0.08)
+  style.scope.feynman.node-style.fill = black
+  for name in ("g", "gluon") {
+    style.scope.feynman.particles.at(name) += (
+      pattern-wavelength: 0.45,
+      pattern-fit: true,
+      pattern-phase: calc.pi / 2,
+      pattern-natural-endpoints: true,
+      pattern-coil-longitudinal-scale: 1.4,
+    )
+  }
+  style
+}
 #let diagram-style = (
   font-size: 6pt,
   cut-line-width: 0.8pt,

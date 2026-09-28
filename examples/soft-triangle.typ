@@ -40,9 +40,9 @@
       ..mom(side: "right", label: (gap: .2, shift: .5)),
     )
     edge(
-      <D3.2>,
+      <D1.2>,
       source(<c>),
-      group: "p2",
+      group: "p1",
       side: "right",
       orientation: "reversed",
       momentum: [$p_1-k$],
@@ -50,7 +50,7 @@
       pos: out-bot,
     )
     edge(<D5>, sink(<c>), source(<d>), show-momentum: false)
-    edge(<D1.2>, source(<d>), orientation: "reversed", momentum: [$p_2-k$], pos: out-top, group: "p1", side: "right",..mom(side: "left", label: (gap: .2, shift: -1.3)))
+    edge(<D3.2>, source(<d>), orientation: "reversed", momentum: [$p_2-k$], pos: out-top, group: "p2", side: "right",..mom(side: "left", label: (gap: .2, shift: -1.3)))
     edge(<D6.1>, sink(<a>), momentum: [$k$], particle: "g", pos: in-mid,
       group: ("p1", "p2"), side: "left",
       ..mom(side: "left", label: (gap: .2)))

@@ -4,34 +4,34 @@
 
 = Linnest directed cut views
 
-Implemented design for `examples/xbox-page-1.typ`. Each view opens *one weighted
+Implemented design for `examples/xbox-sum.typ`. Each view opens *one weighted
 directed cut* of a shared master graph. `left` and `right` describe its two
 drawing boundaries; repeated passages are hedge annotations, not separate named
 cut objects. The general API tutorial is in `docs/manual.typ`; the momentum
 algebra below is specific to this example.
 
 The example consists of three independent, single-page documents:
-- `examples/xbox-page-1.typ`: the four directed openings and momentum identity.
-- `examples/xbox-page-2.typ`: the two manually built momentum routings, with
+- `examples/xbox-sum.typ`: the directed openings and momentum identity.
+- `examples/thrown-out.typ`: the two manually built momentum routings, with
   explicit endpoint groups for shading.
-- `examples/xbox-page-3.typ`: the particle-only soft-discontinuity comparison.
+- `examples/soft-triangle.typ`: the particle-only soft-discontinuity comparison.
 
 `examples/xbox-common.typ` shares the renderer, layout presets, vertex builders,
 and drawing conventions; `examples/map-style.typ` supplies the Feynman styles.
 The edge maps hide internal momenta with `show-momentum: false`, leaving
-external momenta and $k$ visible, including on the through-gluon. Page 3 sets
-this flag in `default-edge-data` instead. Visibility is ordinary edge data,
+external momenta and $k$ visible, including on the through-gluon. Documents
+set this flag per edge or through `default-edge-data`. Visibility is ordinary edge data,
 not inferred by the renderer from topology or momentum text; the physical
 momentum values are retained even when their drawing layers are hidden.
 Each document sets its own page dimensions. The shared `math-font-size` sets
-surrounding equations to 8pt, while `diagram` scopes its measurement and drawing
+surrounding equations to 10pt, while `diagram` scopes its measurement and drawing
 to `diagram-style.font-size` (6pt), including momentum labels. Ordinary text,
 arrow sizes, and graph units are unaffected by the equation font size.
 From the repository root, compile a document directly to its corresponding
 PDF, for example:
 
 ```sh
-typst compile --root . crates/linnest/typst/examples/xbox-page-1.typ
+typst compile --root . crates/linnest/typst/examples/xbox-sum.typ
 ```
 
 The other two documents compile the same way; no PDF-splitting step is needed.
@@ -229,5 +229,5 @@ Coverage is defined in the native weighted-cut tests and
 orientation combinations, sidecar content/callbacks, origins, selection
 ownership, repeated openings, current boundary positions, and invisible
 auxiliary nodes. Check semantic records before comparing rendered pictures,
-without overwriting the user's `xbox-page-1.pdf`, `xbox-page-2.pdf`, or
-`xbox-page-3.pdf`.
+without overwriting the user's `xbox-sum.pdf`, `thrown-out.pdf`, or
+`soft-triangle.pdf`.

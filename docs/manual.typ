@@ -777,16 +777,16 @@
   or connectors. This overrides `pattern-phase`, bypasses `pattern-fit` integer
   fitting, and ignores `pattern-endpoint-slope` (`endpoint-ramp: false`).
 
-  Only automatic construction requires a built-in coil string. A fitted
+  Other patterns ignore the flag. A fitted
   dictionary can be passed directly as `pattern` without this flag, with matching
   `pattern-*` settings; see the Kurvst manual's Path Patterns section for fitting
   and one-pass application. On curved carriers, fitted coils use local
   tangent/normal offsets, not evaluation at a corrected arc distance.
 
-  The gluon preset in `examples/map-style.typ` enables this option. Set
-  `pattern-natural-endpoints: false` to restore its earlier 75%-wavelength
-  endpoint taper (capped at half the path length), with a squared longitudinal
-  envelope and no straight end sections. Without automatic fitting, `pattern-fit: true`
+  The gluons in `examples/xbox-common.typ` enable this option on top of the
+  `examples/map-style.typ` preset. Without it, anchored coils use a
+  75%-wavelength endpoint taper (capped at half the path length), with a squared
+  longitudinal envelope and no straight end sections. Without automatic fitting, `pattern-fit: true`
   adjusts `pattern-wavelength` to the nearest whole number of periods on a
   complete edge; `pattern-phase` is in radians, with `calc.pi / 2` giving coils
   matching endpoint phases. Set `pattern-endpoint-slope: 1` on a layer to
@@ -795,10 +795,15 @@
   so the final direction also depends on phase, amplitude, and wavelength.
   Endpoints remain attached.
 
-  Partially anchored paths, including split-style halves and crossing-gap
-  fragments, keep the requested wavelength, taper only anchored endpoints,
-  and preserve phase continuity across hidden spans. Neither automatic coil
-  construction nor integer fitting applies.
+  When `source-style` and `sink-style` share a pattern and differ only in
+  stroke, for example to colour the two halves of a gluon differently, the
+  whole edge is patterned once, fitted like a single edge, and cut at the edge
+  layout point. Each half keeps its own stroke while the coil runs continuously
+  through the split. Other split-style halves and partially anchored paths,
+  such as crossing-gap fragments, keep the requested wavelength, taper only
+  anchored endpoints, and preserve phase continuity across hidden spans.
+  Neither automatic coil construction nor integer fitting applies. A path with
+  gaps is patterned per continuous run, carrying the phase across each gap.
 
   Paired edges are Kurvst paths split at their edge layout point. Set
   `edge-split-gap` on `draw` to open a centered arc-length gap there, or set
