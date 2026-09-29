@@ -16,6 +16,8 @@
   ),
   constraints: (
     "side-strength": "number",
+    "external-centroid-bias": "number",
+    "external-centroid-distance": "number",
     "node-movement": ("fixed", "layout"),
     direction: ("down", "right", "left-to-right", "left-right", "lr"),
     "rank-alignment": (
@@ -35,11 +37,12 @@
     "same-rank": "rank-groups",
   ),
   labels: (
-    distance: "number",
+    "internal-distance": "number",
+    "external-distance": "number",
     spring: "number",
     repulsion: "number",
     steps: "integer",
-    model: ("normal", "dangling-tangent", "fixed-length"),
+    model: ("normal", "dangling-tangent", "fixed-length", "fixed-gap"),
     step: "number",
     tolerance: "number",
     "max-movement": "number",
@@ -57,6 +60,7 @@
     temperature: "number",
     "max-movement": "number",
     "incremental-energy": "boolean",
+    "subgraph-mode": ("fixed-boundary", "isolated"),
     "crossing-penalty": "number",
     "depth-scale": "non-negative-finite",
     "flattening-end": "unit-interval",
@@ -274,7 +278,8 @@
   /// These override the corresponding flat parameters below.
   /// -> none | dictionary
   constraints: none,
-  /// Semantic label-layout options. Supported fields are `distance`, `spring`,
+  /// Semantic label-layout options. Supported fields are `internal-distance`,
+  /// `external-distance`, `spring`,
   /// `repulsion`, `steps`, `model`, `step`, `tolerance`, and `max-movement`.
   /// These override the corresponding flat parameters below.
   /// -> none | dictionary
@@ -282,17 +287,19 @@
   /// Semantic solver options. Supported fields are `algorithm`, `steps`,
   /// `epochs`, `seed`, `step`, `step-shrink`, `cooling`, `acceptance-floor`,
   /// `tolerance`, `temperature`, `max-movement`, `incremental-energy`,
-  /// `crossing-penalty`, `depth-scale`, and `flattening-end`. These override the
-  /// corresponding flat parameters below.
+  /// `subgraph-mode`, `crossing-penalty`, `depth-scale`, and `flattening-end`.
+  /// These override the corresponding flat parameters below.
   /// -> none | dictionary
   solver: none,
   /// Optional subgraph object to lay out. With `"tree"`, other edges are drawn
   /// from the resulting node positions. With `"dot"` and `"stable-layered"`,
   /// the subgraph determines rank constraints, while all paired edges between
   /// included nodes get dummy routing vertices and edge positions. With
-  /// `"force"` and `"anneal"`, nodes and edges outside the subgraph are fixed
-  /// boundary points during optimization.
-  /// The selection must have compatible topology. -> none | dictionary
+  /// `"force"` and `"anneal"`, `solver.subgraph-mode: "fixed-boundary"` keeps
+  /// outside points fixed but interacting; `"isolated"` excludes them from the
+  /// solver and label-layout interactions. The selection must have compatible
+  /// topology, and isolated selections cannot cross grouped coordinates.
+  /// -> none | dictionary
   subgraph: none,
   /// Width of the layout viewport used to derive the natural spring length.
   /// Applies to both `"force"` and `"anneal"`. -> float
@@ -310,7 +317,7 @@
   /// integration steps within the single depth-flattening schedule;
   /// in `"anneal"` mode this is the number of proposals per temperature epoch.
   /// -> int
-  steps: 30,
+  steps: 100,
   /// Seed for deterministic initialization, force-mode jitter, and annealing
   /// proposals. Applies to both modes. -> int
   seed: 2,
@@ -364,6 +371,15 @@
   /// relative to `beta`. The equal-and-opposite reaction is shared over the
   /// nodes, avoiding translational drift. Applies to both modes. -> float
   gamma-dangling-centroid: 0.0,
+  /// Horizontal spring relative to `k-spring`, pulling incoming endpoints left
+  /// and outgoing endpoints right of the current node centroid. The target
+  /// distance is controlled by `external-centroid-distance`. Leaves Y free
+  /// and respects pins. Both modes.
+  /// Zero disables this bias. -> float
+  external-centroid-bias: 0.0,
+  /// Horizontal target offset from the centroid in external spring lengths,
+  /// including each edge's `spring-length` multiplier. -> float
+  external-centroid-distance: 1.0,
   /// Local edge-edge repulsion, relative to `beta`. Applies to both
   /// modes. -> float
   gamma-ee: 0.1,
@@ -372,9 +388,12 @@
   /// anneal mode treats it as a dimensionless multiplier on proposal steps.
   /// Applies to both modes. -> float
   directional-force: 5.0,
-  /// Edge-label target offset as a multiple of the graph spring length. Label
-  /// layout runs after both graph layout modes. -> float
-  label-length-scale: 0.6,
+  /// Paired-edge label target offset as a multiple of the graph spring length.
+  /// Label layout runs after both graph layout modes. -> float
+  internal-label-length-scale: 0.6,
+  /// Dangling-edge label target offset as a multiple of the graph spring length.
+  /// Independent of internal label spacing. -> float
+  external-label-length-scale: 0.6,
   /// Spring strength pulling each label toward its target offset in the
   /// spring-based label layouts. -> float
   label-spring: 23.0,
@@ -388,7 +407,10 @@
   /// `"dangling-tangent"` uses the edge direction for dangling half-edge labels
   /// and a perpendicular offset for paired edges, and `"fixed-length"` keeps
   /// each label at a fixed distance from its edge point and only lets that
-  /// segment rotate. -> string
+  /// segment rotate. `"fixed-gap"` keeps internal labels at a uniform clearance
+  /// from their measured text box, sliding along the rendered curve to avoid
+  /// overlaps without changing that gap;
+  /// dangling labels retain outward tangent relaxation. -> string
   label-layout: "normal",
   /// Label relaxation step size. Applies after both modes. -> float
   label-step: 0.15,
@@ -513,12 +535,21 @@
     gamma-dangling-centroid: str(
       repulsion.at("dangling-centroid", default: gamma-dangling-centroid),
     ),
+    external-centroid-bias: str(constraints.at(
+      "external-centroid-bias",
+      default: external-centroid-bias,
+    )),
+    external-centroid-distance: str(constraints.at(
+      "external-centroid-distance",
+      default: external-centroid-distance,
+    )),
     gamma-ee: str(repulsion.at("edge-edge", default: gamma-ee)),
     directional-force: str(constraints.at(
       "side-strength",
       default: directional-force,
     )),
-    label-length-scale: str(labels.at("distance", default: label-length-scale)),
+    internal-label-length-scale: str(labels.at("internal-distance", default: internal-label-length-scale)),
+    external-label-length-scale: str(labels.at("external-distance", default: external-label-length-scale)),
     label-spring: str(labels.at("spring", default: label-spring)),
     label-charge: str(labels.at("repulsion", default: label-charge)),
     label-steps: str(labels.at("steps", default: label-steps)),
@@ -534,6 +565,7 @@
       "incremental-energy",
       default: incremental-energy,
     ),
+    subgraph-mode: solver.at("subgraph-mode", default: "fixed-boundary"),
     layout-algo: solver.at("algorithm", default: layout-algo),
     layout-nodes: constraints.at("node-movement", default: layout-nodes),
     layout-direction: constraints.at("direction", default: layout-direction),
