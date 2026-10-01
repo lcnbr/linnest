@@ -17,8 +17,10 @@
 /// Split a laid-out graph edge into source and sink half-edge paths.
 ///
 /// The returned dictionary has `source`, `sink`, `curve`, and `split-gap`. The
-/// split point is the edge layout point, so a zero-gap pair joins smoothly
-/// there. `split-gap` reports the effective gap when a requested half-gap is
+/// path follows the source route points, edge layout point, and reversed sink
+/// route points. The split point is the edge layout point, so a zero-gap pair
+/// joins smoothly there. Repeated consecutive routed points are collapsed for
+/// drawing. `split-gap` reports the effective gap when a requested half-gap is
 /// longer than either half-edge.
 /// -> dictionary
 #let edge-halves(
@@ -302,16 +304,24 @@
   /// Show the padded boxes used by label placement: dashed purple for
   /// label–label clearance, cyan for label–obstacle clearance, and orange for
   /// node/edge obstacles. Base pair padding is shared equally; label boxes also
-  /// include `label-collision-padding`. A label ignores orange boxes belonging
-  /// to its own edge unless it is a self-loop. Floating
+  /// include `label-collision-padding`. Ordinary painted edges penalize only
+  /// intersections with the unpadded text box; self-loop bends retain clearance
+  /// boxes. Green boxes show momentum shafts and arrowheads. Floating
   /// overlays do not affect placement, canvas bounds, or interaction targets.
   /// -> bool
   debug-label-collisions: false,
   /// Extra padding on every side of label collision boxes, in canvas units.
   /// Adds to the base label–label and label–obstacle clearances; zero restores
-  /// those base boxes. Affects sliding/side choices, not the normal label gap.
+  /// those base boxes. Affects sliding/side choices, not the normal label gap
+  /// or the text–edge intersection test. Arrow and text slide together; coupled
+  /// moves help crowded annotations pass one another.
   /// -> int | float
   label-collision-padding: _impl-label-collision-padding.extra,
+  /// Clearance from a dangling endpoint to the nearest side of its automatic
+  /// label's text box, in canvas units, measured along the outward tangent.
+  /// Explicit label positions and path-attached labels keep their placement.
+  /// -> int | float
+  external-label-gap: 0.25,
   /// Show `h_i` beside every half-edge without an explicit endpoint label.
   /// -> bool
   show-half-edge-ids: false,
@@ -419,8 +429,10 @@
   /// then split source/sink styling at the edge point. `route: "direct"` keeps
   /// the same anchored cubic routing but suppresses the default edge-position
   /// Hobby route.
-  /// `route-points: "through"` also threads any layout-provided half-edge route
-  /// points through that same Hobby path.
+  /// Half-edge `route-points` are followed by default on ordinary, anchored,
+  /// and dangling edges using a Hobby spline. They are ordered from each node
+  /// toward the edge layout point. Set `route-points: "ignore"` on both halves
+  /// to suppress them. The source/sink style split remains at the edge point.
   /// `route: "straight-through"` draws the two straight force springs from
   /// source to edge position and from edge position to sink.
   /// `pattern-natural-endpoints` defaults to `false`. For built-in coil strings
@@ -540,6 +552,7 @@
       debug: debug,
       debug-label-collisions: debug-label-collisions,
       label-collision-padding: label-collision-padding,
+      external-label-gap: external-label-gap,
       show-half-edge-ids: show-half-edge-ids,
       node-radius: node-radius,
       node-min-radius: node-min-radius,
