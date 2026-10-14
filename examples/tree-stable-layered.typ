@@ -1,5 +1,5 @@
 #import "../src/lib.typ": draw, graph, layouts, subgraph
-#import "@preview/cetz:0.5.1" as cetz
+#import "@preview/cetz:0.5.2" as cetz
 
 #set page(width: auto, height: auto)
 #set text(size: 5pt)
@@ -325,7 +325,8 @@
         tree-dy: 14.,
         route-label-width-cap: 0.,
         label-steps: 40,
-        label-length-scale: 0.35,
+        internal-label-length-scale: 0.35,
+        external-label-length-scale: 0.35,
       )
       let depths = subgraph.node-depths(g, tree)
       [#metadata(graph.nodes(g)) <linnest-tree-nodes>]

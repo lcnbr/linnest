@@ -144,7 +144,7 @@
 /// Parsed fields take precedence over default data fields, so DOT
 /// `label="..."` overrides `default-node-data: (label: ...)`.
 ///
-/// Linnest uses `dot-parser` for DOT syntax and then gives special meaning to a
+/// Linnest reads DOT syntax with Linnet's DOT reader and then gives special meaning to a
 /// small set of attributes. Every other attribute is preserved as a flat string
 /// statement. Preserved statements are visible through @info, @nodes, @edges,
 /// @map, and @eval-fields, but they do not become native Typst `data` unless a
@@ -608,10 +608,14 @@
   statement: none,
   /// DOT compass point such as `"n"`, `"s"`, `"e"`, or `"w"`. -> none | string
   compass: none,
+  /// Interior route points ordered from this node toward the edge position.
+  /// Points accept two-item arrays or `(x:, y:)` dictionaries. They are drawing
+  /// geometry, not additional graph vertices. -> array
+  route-points: (),
 ) = {
   _impl.source(
     node,
-    (name: name, id: id, statement: statement, compass: compass),
+    (name: name, id: id, statement: statement, compass: compass, route-points: route-points),
     ..args,
   )
 }
@@ -635,10 +639,14 @@
   statement: none,
   /// DOT compass point such as `"n"`, `"s"`, `"e"`, or `"w"`. -> none | string
   compass: none,
+  /// Interior route points ordered from this node toward the edge position.
+  /// Points accept two-item arrays or `(x:, y:)` dictionaries. They are drawing
+  /// geometry, not additional graph vertices. -> array
+  route-points: (),
 ) = {
   _impl.sink(
     node,
-    (name: name, id: id, statement: statement, compass: compass),
+    (name: name, id: id, statement: statement, compass: compass, route-points: route-points),
     ..args,
   )
 }
@@ -809,11 +817,13 @@
 /// content and stored functions in the existing `data` value are preserved.
 /// Unchanged fields in a returned full record are not reapplied; this preserves partial XY placements when patching z or data.
 /// Source and sink callbacks may likewise patch `statement`, `port-label`, and
-/// `compass` before subgraph and layout operations run.
+/// `compass`, and `route-points` before subgraph and layout operations run.
 ///
 /// Constant patches and callback results use identical semantics. Node structural
 /// keys are `pos`, `shift`, and `statements`; edges also accept `label-pos`,
-/// `label-angle`, `bend`, and `spring-length`. With no `data` key, other keys shallow-merge into
+/// `label-angle`, `bend`, and `spring-length`. Half-edge structural fields include
+/// `route-points`; an empty array clears its interior route. With no `data` key,
+/// other keys shallow-merge into
 /// existing native dictionary data (or replace non-dictionary data with that
 /// patch). An explicit `data` key instead replaces native data, ignoring other
 /// non-structural keys; `data: none` leaves native data unchanged. Native Typst
